@@ -15,7 +15,13 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedSideEffectImports": true
+    "noUncheckedSideEffectImports": true,
+    "baseUrl": ".",
+    "paths": {
+      "@ton/core": ["../node_modules/@ton/core"],
+      "@ton/crypto": ["../node_modules/@ton/crypto"],
+      "@ton/ton": ["../node_modules/@ton/ton"]
+    }
   },
   "include": ["src"]
 }

@@ -1,6 +1,11 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
 
 import react from '@vitejs/plugin-react';
+
+const webRoot = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(webRoot, '..');
 
 
 
@@ -71,6 +76,9 @@ export default defineConfig({
     alias: {
 
       buffer: 'buffer/',
+      '@ton/core': path.resolve(repoRoot, 'node_modules/@ton/core'),
+      '@ton/crypto': path.resolve(repoRoot, 'node_modules/@ton/crypto'),
+      '@ton/ton': path.resolve(repoRoot, 'node_modules/@ton/ton'),
 
     },
 

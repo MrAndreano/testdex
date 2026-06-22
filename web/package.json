@@ -15,7 +15,7 @@
   "dependencies": {
     "@ston-fi/sdk": "^2.7.0",
     "@ton/core": "^0.62.0",
-    "@ton/crypto": "^3.2.0",
+    "@ton/crypto": "^3.3.0",
     "@ton/ton": "^15.2.1",
     "@tonconnect/ui-react": "^2.4.2",
     "buffer": "^6.0.3",
