@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/lib*.json
+build/*.cell
+build/graph*/
+contracts/build/deploy.config.json
+contracts/build/lib.config.json
+pton/build/deploy.config.json
+.env
+.env.local
+*.log
+.DS_Store

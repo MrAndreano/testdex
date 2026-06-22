@@ -1,0 +1,5 @@
+const params::workchain = 0;
+
+const params::version_major = <%= version[0] %>;
+const params::version_minor = <%= version[1] %>;
+const params::version_development = "<%= version[3] %>";

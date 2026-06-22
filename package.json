@@ -1,0 +1,30 @@
+{
+  "name": "testdex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TestDex — AMM DEX on TON testnet (STON.fi-compatible contracts)",
+  "workspaces": [
+    "contracts",
+    "pton",
+    "web"
+  ],
+  "scripts": {
+    "bootstrap": "npm install && npm run build -w contracts && npm run build -w pton && npm run build -w web",
+    "build": "npm run build -w contracts && npm run build -w pton && npm run build -w web",
+    "build:pages": "npm run build:pages -w web",
+    "build:contracts": "npm run build -w contracts",
+    "build:pton": "npm run build -w pton",
+    "dev": "npm run dev -w web",
+    "deploy:router": "npm run deploy:router -w contracts",
+    "deploy:pton": "npm run deploy:pton -w pton",
+    "deploy:tokens": "npm run deploy:tokens -w contracts",
+    "deploy:liquidity": "npm run deploy:liquidity -w contracts",
+    "export:config": "npm run export:config -w contracts"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "overrides": {
+    "@ton/core": "^0.62.0"
+  }
+}

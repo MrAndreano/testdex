@@ -1,0 +1,27 @@
+{
+  "name": "testdex",
+  "network": "testnet",
+  "tonApiEndpoint": "https://testnet.toncenter.com/api/v2/jsonRPC",
+  "tonConnectManifestUrl": "https://mrandreano.github.io/testdex/tonconnect-manifest.json",
+  "routerAddress": "",
+  "ptonMasterAddress": "",
+  "adminAddress": "",
+  "protocolFeeAddress": "",
+  "dexVersion": "v2_1",
+  "routerType": "CPI",
+  "tokens": [
+    {
+      "symbol": "TTA",
+      "name": "TestToken Alpha",
+      "address": "",
+      "decimals": 9
+    },
+    {
+      "symbol": "TTB",
+      "name": "TestToken Beta",
+      "address": "",
+      "decimals": 9
+    }
+  ],
+  "pools": []
+}

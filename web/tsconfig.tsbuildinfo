@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/config.ts","./src/dex.ts","./src/jettonwallets.ts","./src/main.tsx","./src/polyfills.ts","./src/pools.ts","./src/tonconnecttx.ts","./src/vite-env.d.ts"],"version":"5.9.3"}

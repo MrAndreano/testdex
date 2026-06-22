@@ -1,0 +1,35 @@
+{
+  "name": "testdex",
+  "network": "testnet",
+  "tonApiEndpoint": "https://testnet.toncenter.com/api/v2/jsonRPC",
+  "tonConnectManifestUrl": "https://mrandreano.github.io/testdex/tonconnect-manifest.json",
+  "routerAddress": "EQB369AsoUtlJ26Wtv7i4hPQ8-RYEVeOjqQdd9KrVDvdPLaU",
+  "ptonMasterAddress": "EQDMU1Of5hAy9OdGYSOidTI7_lTuue-MgRhVpSeuTUXJrEKg",
+  "adminAddress": "EQDpk1VpmiNGSTRkKoEZDpECp6jWiBjYYx_3mOpuk6Jx7E1i",
+  "protocolFeeAddress": "EQDpk1VpmiNGSTRkKoEZDpECp6jWiBjYYx_3mOpuk6Jx7E1i",
+  "dexVersion": "v2_1",
+  "routerType": "CPI",
+  "tokens": [
+    {
+      "symbol": "TTA",
+      "name": "TestDex TTA",
+      "address": "EQCFlOGfOpNARgwg2xYGkWbycXQXmyYsROrdfvhFoi0BR-XN",
+      "decimals": 9,
+      "routerWallet": "EQBrgkfFZ6IsPfyhDjs0lDNwFHqi4YvQo7d5y9RZjzrcSutk"
+    },
+    {
+      "symbol": "TTB",
+      "name": "TestDex TTB",
+      "address": "EQDhouSO869-fpLI99a-Y2ElljqlaUlFnxcSWq5y-BCxtf1I",
+      "decimals": 9,
+      "routerWallet": "EQAXkXng-_mhChDdzAw2yu0lulXw2-CWcbNlJViuf7gLno-D"
+    }
+  ],
+  "pools": [
+    {
+      "address": "EQDCtTm0BecdZIsb9JpalXtCNVZqf6vPk-th8-TSAF3EWxVX",
+      "token0": "TTB",
+      "token1": "TTA"
+    }
+  ]
+}
