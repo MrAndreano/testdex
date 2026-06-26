@@ -4,11 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "predev": "node scripts/generate-manifest.mjs",
+    "predev": "node scripts/optimize-icon.mjs && node scripts/generate-manifest.mjs",
     "dev": "npx vite",
-    "prebuild": "node scripts/generate-manifest.mjs",
+    "prebuild": "node scripts/optimize-icon.mjs && node scripts/generate-manifest.mjs",
     "build": "tsc -b && npx vite build",
-    "build:pages": "node scripts/generate-manifest.mjs && tsc -b && npx vite build",
+    "build:pages": "node scripts/optimize-icon.mjs && node scripts/generate-manifest.mjs && tsc -b && npx vite build",
     "preview": "npx vite preview",
     "preview:pages": "VITE_BASE_PATH=/testdex/ VITE_SITE_URL=https://mrandreano.github.io/testdex npm run build:pages && npx vite preview --base /testdex/"
   },
@@ -27,6 +27,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.7.2",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "sharp": "^0.33.5"
   }
 }

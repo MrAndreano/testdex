@@ -397,6 +397,17 @@ body {
   gap: 10px;
 }
 
+.pool-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pool-card-head strong {
+  font-size: 1rem;
+}
+
 .pool-badge {
   font-size: 0.6875rem;
   padding: 2px 8px;
@@ -437,6 +448,15 @@ body {
 .pool-reserve-value {
   font-size: 1.0625rem;
   font-weight: 600;
+}
+
+.pool-stats,
+.pool-fees {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8125rem;
+  color: #8b9cb3;
 }
 
 .hint {

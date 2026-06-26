@@ -5,6 +5,7 @@ export type TestDexToken = {
   name: string;
   address: string;
   decimals: number;
+  /** Jetton wallet of router for this token — ускоряет вкладку «Пулы» */
   routerWallet?: string;
 };
 
@@ -20,6 +21,7 @@ export type TestDexConfig = {
   name: string;
   network: string;
   tonApiEndpoint: string;
+  /** Необязательно: ключ Toncenter для локальной разработки */
   tonApiKey?: string;
   tonConnectManifestUrl: string;
   routerAddress: string;
@@ -34,10 +36,17 @@ export type TestDexConfig = {
 
 let cached: TestDexConfig | null = null;
 
+/** Absolute URL for static assets (works on GitHub Pages subpaths). */
+export function assetUrl(path: string): string {
+  const base = import.meta.env.BASE_URL;
+  const clean = path.replace(/^\//, '');
+  return `${base}${clean}`;
+}
+
 export async function loadConfig(): Promise<TestDexConfig> {
   if (cached) return cached;
-  const res = await fetch(`${import.meta.env.BASE_URL}testnet.json`);
-  if (!res.ok) throw new Error('Failed to load testnet.json');
+  const res = await fetch(assetUrl('testnet.json'));
+  if (!res.ok) throw new Error(`Не удалось загрузить testnet.json (${res.status})`);
   const json = (await res.json()) as TestDexConfig;
   const envKey = import.meta.env.VITE_TON_API_KEY as string | undefined;
   if (envKey && !json.tonApiKey) {

@@ -17,15 +17,29 @@ export async function getJettonWalletAddress(
   const cached = walletCache.get(key);
   if (cached) return cached;
 
-  const res = await ctx.client.runMethod(jettonMaster, 'get_wallet_address', [
-    {
-      type: 'slice',
-      cell: beginCell().storeAddress(owner).endCell(),
-    },
-  ]);
-  const wallet = res.stack.readAddress();
-  walletCache.set(key, wallet);
-  return wallet;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 800 * attempt));
+    }
+    try {
+      const res = await ctx.client.runMethod(jettonMaster, 'get_wallet_address', [
+        {
+          type: 'slice',
+          cell: beginCell().storeAddress(owner).endCell(),
+        },
+      ]);
+      const wallet = res.stack.readAddress();
+      walletCache.set(key, wallet);
+      return wallet;
+    } catch (e) {
+      lastError = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/429|rate limit/i.test(msg)) break;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 /** Maps router jetton wallet address → token metadata from testnet.json. */

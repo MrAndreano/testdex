@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useTonConnectUI, useTonWallet } from '@tonconnect/ui-react';
+import { CHAIN, useTonConnectUI, useTonWallet } from '@tonconnect/ui-react';
 import { Address, toNano } from '@ton/core';
 import { loadConfig, parseAmount, formatAmount, tokenMatchesQuery, findToken, type TestDexConfig } from './config';
 import { createDexContext, TON_ASSET } from './dex';
 import { loadLiquidityPools, type LiquidityPoolInfo } from './pools';
 import { buildTonConnectMessage, buildTonConnectRequest } from './tonConnectTx';
+import { getJettonWalletAddress } from './jettonWallets';
+import { buildProvideLiquidityJettonTx, formatTxError } from './txBuilder';
 
 type Tab = 'swap' | 'liquidity';
 type LiquidityView = 'pools' | 'add';
@@ -18,12 +20,18 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('swap');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState(false);
 
   useEffect(() => {
     loadConfig()
       .then(setCfg)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
+
+  const showStatus = (message: string | null, isError = false) => {
+    setStatus(message);
+    setStatusError(isError);
+  };
 
   const assets = useMemo(() => {
     if (!cfg) return [TON_ASSET];
@@ -35,21 +43,24 @@ export default function App() {
       <header className="header">
         <div>
           <h1>TestDex</h1>
-          <p className="subtitle">AMM на TON testnet · ваш Router · ваши комиссии</p>
+          <p className="subtitle">AMM на TON testnet · GitHub Pages</p>
         </div>
-        <button
-          type="button"
-          className="wallet-btn"
-          onClick={() => tonConnectUI.openModal()}
-        >
+        <button type="button" className="wallet-btn" onClick={() => tonConnectUI.openModal()}>
           {wallet ? shortAddr(wallet.account.address) : 'Подключить кошелёк'}
         </button>
       </header>
 
       {error && <div className="banner error">{error}</div>}
+      {wallet && cfg?.network === 'testnet' && wallet.account.chain !== CHAIN.TESTNET && (
+        <div className="banner warn">
+          Кошелёк подключён к <strong>mainnet</strong>, а TestDex работает на <strong>testnet</strong>.
+          Переключите сеть в Tonkeeper: Настройки → Testnet.
+        </div>
+      )}
       {cfg && !cfg.routerAddress && (
         <div className="banner warn">
-          Контракты ещё не задеплоены. Заполните <code>web/public/testnet.json</code> после деплоя.
+          Заполните <code>public/testnet.json</code> адресами контрактов (см. README). Деплой — в{' '}
+          <code>C:\Project\TestDex</code>.
         </div>
       )}
 
@@ -69,7 +80,7 @@ export default function App() {
           walletAddress={wallet?.account.address}
           busy={busy}
           setBusy={setBusy}
-          setStatus={setStatus}
+          setStatus={showStatus}
         />
       )}
 
@@ -78,13 +89,14 @@ export default function App() {
           cfg={cfg}
           assets={assets.filter((a) => a !== TON_ASSET)}
           walletAddress={wallet?.account.address}
+          walletChain={wallet?.account.chain}
           busy={busy}
           setBusy={setBusy}
-          setStatus={setStatus}
+          setStatus={showStatus}
         />
       )}
 
-      {status && <div className="banner ok">{status}</div>}
+      {status && <div className={`banner ${statusError ? 'error' : 'ok'}`}>{status}</div>}
 
       <footer className="footer">
         <span>Network: testnet</span>
@@ -100,7 +112,7 @@ function SwapPanel(props: {
   walletAddress?: string;
   busy: boolean;
   setBusy: (v: boolean) => void;
-  setStatus: (v: string | null) => void;
+  setStatus: (v: string | null, isError?: boolean) => void;
 }) {
   const [tonConnectUI] = useTonConnectUI();
   const { cfg, assets, walletAddress, busy, setBusy, setStatus } = props;
@@ -130,22 +142,36 @@ function SwapPanel(props: {
           proxyTon: dex.proxyTon,
           offerAmount,
           askJettonAddress: askToken.address,
+          askJettonWalletAddress: askToken.routerWallet,
           minAskAmount: minAsk.toString(),
         });
       } else if (to === TON_ASSET && offerToken) {
+        const offerWallet = await getJettonWalletAddress(
+          dex,
+          Address.parse(offerToken.address),
+          Address.parse(walletAddress),
+        );
         tx = await dex.router.getSwapJettonToTonTxParams({
           userWalletAddress: walletAddress,
           offerJettonAddress: offerToken.address,
+          offerJettonWalletAddress: offerWallet,
           offerAmount,
           minAskAmount: minAsk.toString(),
           proxyTon: dex.proxyTon,
         });
       } else if (offerToken && askToken) {
+        const offerWallet = await getJettonWalletAddress(
+          dex,
+          Address.parse(offerToken.address),
+          Address.parse(walletAddress),
+        );
         tx = await dex.router.getSwapJettonToJettonTxParams({
           userWalletAddress: walletAddress,
           offerJettonAddress: offerToken.address,
-          offerAmount,
+          offerJettonWalletAddress: offerWallet,
           askJettonAddress: askToken.address,
+          askJettonWalletAddress: askToken.routerWallet,
+          offerAmount,
           minAskAmount: minAsk.toString(),
         });
       } else {
@@ -157,7 +183,7 @@ function SwapPanel(props: {
       );
       setStatus(`Swap отправлен: ${amount} ${from} → ${to}`);
     } catch (e: unknown) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      setStatus(formatTxError(e), true);
     } finally {
       setBusy(false);
     }
@@ -174,7 +200,7 @@ function SwapPanel(props: {
         <input className="input small" value={slippage} onChange={(e) => setSlippage(e.target.value)} />
       </label>
       <button type="button" className="primary" disabled={busy || !amount} onClick={swap}>
-        {busy ? 'Отправка…' : 'Обменять'}
+        {busy ? 'Формируем…' : 'Обменять'}
       </button>
     </section>
   );
@@ -184,11 +210,12 @@ function LiquidityPanel(props: {
   cfg: TestDexConfig;
   assets: string[];
   walletAddress?: string;
+  walletChain?: string;
   busy: boolean;
   setBusy: (v: boolean) => void;
-  setStatus: (v: string | null) => void;
+  setStatus: (v: string | null, isError?: boolean) => void;
 }) {
-  const { cfg, assets, walletAddress, busy, setBusy, setStatus } = props;
+  const { cfg, assets, walletAddress, walletChain, busy, setBusy, setStatus } = props;
   const [view, setView] = useState<LiquidityView>('pools');
   const [pools, setPools] = useState<LiquidityPoolInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -243,6 +270,10 @@ function LiquidityPanel(props: {
       tonConnectUI.openModal();
       return;
     }
+    if (cfg.network === 'testnet' && walletChain && walletChain !== CHAIN.TESTNET) {
+      setStatus('Кошелёк на mainnet. Включите Testnet в Tonkeeper.', true);
+      return;
+    }
     setBusy(true);
     setStatus(null);
     try {
@@ -252,12 +283,13 @@ function LiquidityPanel(props: {
       const amtA = parseAmount(amountA, jettonA.decimals);
       if (amtA <= 0n) throw new Error('Укажите количество первого токена');
 
-      const txA = await dex.router.getSingleSideProvideLiquidityJettonTxParams({
+      const txA = await buildProvideLiquidityJettonTx(dex, cfg, {
         userWalletAddress: walletAddress,
-        sendTokenAddress: jettonA.address,
+        sendToken: jettonA,
+        otherToken: jettonB,
         sendAmount: amtA,
-        otherTokenAddress: jettonB.address,
         minLpOut: '1',
+        singleSide: true,
       });
 
       await sendTonConnectTx(txA);
@@ -268,7 +300,7 @@ function LiquidityPanel(props: {
       );
       void refreshPools();
     } catch (e: unknown) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      setStatus(formatTxError(e), true);
     } finally {
       setBusy(false);
     }
@@ -277,6 +309,10 @@ function LiquidityPanel(props: {
   const provideSecond = async () => {
     if (!walletAddress) {
       tonConnectUI.openModal();
+      return;
+    }
+    if (cfg.network === 'testnet' && walletChain && walletChain !== CHAIN.TESTNET) {
+      setStatus('Кошелёк на mainnet. Включите Testnet в Tonkeeper.', true);
       return;
     }
     setBusy(true);
@@ -288,12 +324,13 @@ function LiquidityPanel(props: {
       const amtB = parseAmount(amountB, jettonB.decimals);
       if (amtB <= 0n) throw new Error('Укажите количество второго токена');
 
-      const txB = await dex.router.getProvideLiquidityJettonTxParams({
+      const txB = await buildProvideLiquidityJettonTx(dex, cfg, {
         userWalletAddress: walletAddress,
-        sendTokenAddress: jettonB.address,
+        sendToken: jettonB,
+        otherToken: jettonA,
         sendAmount: amtB,
-        otherTokenAddress: jettonA.address,
         minLpOut: '1',
+        singleSide: false,
       });
 
       await sendTonConnectTx(txB);
@@ -302,7 +339,7 @@ function LiquidityPanel(props: {
       void refreshPools();
       setView('pools');
     } catch (e: unknown) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      setStatus(formatTxError(e), true);
     } finally {
       setBusy(false);
     }

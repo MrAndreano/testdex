@@ -18,6 +18,8 @@
     "deploy:router": "npm run deploy:router -w contracts",
     "deploy:pton": "npm run deploy:pton -w pton",
     "deploy:tokens": "npm run deploy:tokens -w contracts",
+    "mint:tokens": "npm run mint:tokens -w contracts",
+    "mint:ttb": "npm run mint:ttb -w contracts",
     "deploy:liquidity": "npm run deploy:liquidity -w contracts",
     "export:config": "npm run export:config -w contracts"
   },
