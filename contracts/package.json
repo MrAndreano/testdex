@@ -8,6 +8,8 @@
         "build": "ts-node helpers/build.ts",
         "deploy:router": "ts-node scripts/deployAll.ts --step=router",
         "deploy:tokens": "ts-node scripts/deployAll.ts --step=tokens",
+        "mint:tokens": "ts-node scripts/mintAll.ts",
+        "mint:ttb": "ts-node scripts/mintAll.ts --only=TTB",
         "deploy:liquidity": "ts-node scripts/deployAll.ts --step=liquidity",
         "deploy:all": "ts-node scripts/deployAll.ts --step=all",
         "check:wallet": "ts-node scripts/checkWallet.ts",

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { createTestDexProvider } from './testnetProvider';
 import { run as deployRouter } from './deployRouter';
 import { run as deployTestTokens } from './deployTestTokens';
+import { run as mintAllTestTokens } from './mintAllTestTokens';
 import { run as provideInitialLiquidity } from './provideInitialLiquidity';
 
 function sleep(ms: number) {
@@ -20,6 +21,10 @@ async function main() {
     if (step === 'tokens' || step === 'all') {
         console.log('>> deployTestTokens');
         await deployTestTokens(p);
+    }
+    if (step === 'mint') {
+        console.log('>> mintAllTestTokens');
+        await mintAllTestTokens();
     }
     if (step === 'liquidity' || step === 'all') {
         if (step === 'all') {
