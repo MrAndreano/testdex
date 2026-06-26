@@ -426,6 +426,95 @@ body {
   color: #fbbf24;
 }
 
+.pool-badge.ok {
+  border-color: rgba(134, 239, 172, 0.35);
+  color: #86efac;
+}
+
+.admin-panel .hint {
+  margin-top: 0;
+}
+
+.admin-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 16px;
+  padding: 12px;
+  border: 1px solid #2a3548;
+  border-radius: 12px;
+  background: #0b0f17;
+}
+
+.admin-meta-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.admin-meta-label {
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.admin-meta-value {
+  font-size: 0.875rem;
+}
+
+.admin-pool-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.admin-pool-card {
+  padding: 14px;
+  border: 1px solid #2a3548;
+  border-radius: 14px;
+  background: #141c2b;
+}
+
+.admin-fee-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.admin-fee-chip {
+  padding: 10px;
+  border-radius: 10px;
+  background: #0b0f17;
+  border: 1px solid #2a3548;
+}
+
+.admin-blockers {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  color: #fbbf24;
+  font-size: 0.8125rem;
+}
+
+.admin-blockers li {
+  margin-bottom: 4px;
+}
+
+.admin-ready-hint {
+  margin-bottom: 10px;
+}
+
+.admin-pool-card .primary {
+  width: 100%;
+}
+
+.admin-pool-card .primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .pool-meta {
   font-family: ui-monospace, monospace;
   font-size: 0.75rem;

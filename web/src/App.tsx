@@ -7,8 +7,16 @@ import { loadLiquidityPools, type LiquidityPoolInfo } from './pools';
 import { buildTonConnectMessage, buildTonConnectRequest } from './tonConnectTx';
 import { getJettonWalletAddress } from './jettonWallets';
 import { buildProvideLiquidityJettonTx, formatTxError } from './txBuilder';
+import {
+  buildCollectFeesTx,
+  formatCollected,
+  isCreatorWallet,
+  loadProtocolFeeStatuses,
+  totalCollectableHint,
+  type ProtocolFeePoolStatus,
+} from './adminFees';
 
-type Tab = 'swap' | 'liquidity';
+type Tab = 'swap' | 'liquidity' | 'admin';
 type LiquidityView = 'pools' | 'add';
 type LiquidityStep = 'first' | 'second';
 
@@ -71,6 +79,9 @@ export default function App() {
         <button type="button" className={tab === 'liquidity' ? 'active' : ''} onClick={() => setTab('liquidity')}>
           Ликвидность
         </button>
+        <button type="button" className={tab === 'admin' ? 'active' : ''} onClick={() => setTab('admin')}>
+          Админ
+        </button>
       </nav>
 
       {cfg && tab === 'swap' && (
@@ -96,6 +107,17 @@ export default function App() {
         />
       )}
 
+      {cfg && tab === 'admin' && (
+        <AdminPanel
+          cfg={cfg}
+          walletAddress={wallet?.account.address}
+          walletChain={wallet?.account.chain}
+          busy={busy}
+          setBusy={setBusy}
+          setStatus={showStatus}
+        />
+      )}
+
       {status && <div className={`banner ${statusError ? 'error' : 'ok'}`}>{status}</div>}
 
       <footer className="footer">
@@ -103,6 +125,192 @@ export default function App() {
         {cfg?.routerAddress && <span>Router: {shortAddr(cfg.routerAddress)}</span>}
       </footer>
     </div>
+  );
+}
+
+function AdminPanel(props: {
+  cfg: TestDexConfig;
+  walletAddress?: string;
+  walletChain?: string;
+  busy: boolean;
+  setBusy: (v: boolean) => void;
+  setStatus: (v: string | null, isError?: boolean) => void;
+}) {
+  const [tonConnectUI] = useTonConnectUI();
+  const { cfg, walletAddress, walletChain, busy, setBusy, setStatus } = props;
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [pools, setPools] = useState<ProtocolFeePoolStatus[]>([]);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+
+  const creatorAddr = cfg.protocolFeeAddress || cfg.adminAddress;
+  const isCreator = walletAddress ? isCreatorWallet(cfg, walletAddress) : false;
+  const testnet = cfg.network === 'testnet';
+
+  const refresh = async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      setPools(await loadProtocolFeeStatuses(cfg));
+      setUpdatedAt(new Date());
+    } catch (e: unknown) {
+      setLoadError(e instanceof Error ? e.message : String(e));
+      setPools([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, [cfg]);
+
+  const collectFees = async (pool: ProtocolFeePoolStatus) => {
+    if (!walletAddress) {
+      tonConnectUI.openModal();
+      return;
+    }
+    if (testnet && walletChain && walletChain !== CHAIN.TESTNET) {
+      setStatus('Кошелёк на mainnet. Включите Testnet в Tonkeeper.', true);
+      return;
+    }
+    if (!pool.canCollect) {
+      setStatus('Вывод пока недоступен — см. условия ниже.', true);
+      return;
+    }
+
+    setBusy(true);
+    setStatus(null);
+    try {
+      const tx = buildCollectFeesTx(pool.poolAddress);
+      await tonConnectUI.sendTransaction(
+        buildTonConnectRequest(cfg, [buildTonConnectMessage(tx, testnet)]),
+      );
+      setStatus(
+        `collect_fees отправлен для ${pool.pairLabel}. Jetton поступят на ${shortAddr(creatorAddr)} (~30 с).`,
+      );
+      setTimeout(() => void refresh(), 15000);
+    } catch (e: unknown) {
+      setStatus(formatTxError(e), true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const anyReady = pools.some((p) => p.canCollect);
+
+  return (
+    <section className="panel admin-panel">
+      <div className="panel-head">
+        <h2>Protocol fees</h2>
+        <button type="button" className="ghost-btn" disabled={loading} title="Обновить" onClick={() => void refresh()}>
+          {loading ? '…' : '↻'}
+        </button>
+      </div>
+
+      <p className="hint">
+        Комиссия протокола ({pools[0]?.protocolFeePercent ?? '0.10%'} с swap) копится в пуле. Вывод — на адрес создателя.
+      </p>
+
+      <div className="admin-meta">
+        <div className="admin-meta-row">
+          <span className="admin-meta-label">Получатель jetton</span>
+          <code className="admin-meta-value">{shortAddr(creatorAddr)}</code>
+        </div>
+        <div className="admin-meta-row">
+          <span className="admin-meta-label">Ваш кошелёк</span>
+          <span className="admin-meta-value">
+            {walletAddress ? (
+              <>
+                {shortAddr(walletAddress)}{' '}
+                {isCreator ? <span className="pool-badge ok">создатель</span> : <span className="pool-badge warn">не создатель</span>}
+              </>
+            ) : (
+              'не подключён'
+            )}
+          </span>
+        </div>
+      </div>
+
+      {!walletAddress && (
+        <div className="banner warn inline">
+          Подключите кошелёк создателя ({shortAddr(creatorAddr)}), чтобы подписать вывод.
+        </div>
+      )}
+
+      {walletAddress && !isCreator && (
+        <div className="banner warn inline">
+          Jetton всё равно придут на <strong>{shortAddr(creatorAddr)}</strong>, не на ваш текущий адрес. Газ платит отправитель.
+        </div>
+      )}
+
+      {loadError && <div className="banner error inline">{loadError}</div>}
+
+      {updatedAt && !loading && (
+        <p className="hint pools-updated">Обновлено: {updatedAt.toLocaleTimeString()}</p>
+      )}
+
+      {loading && pools.length === 0 && !loadError && <p className="hint empty">Загрузка…</p>}
+
+      <ul className="admin-pool-list">
+        {pools.map((pool) => (
+          <li key={pool.poolAddress}>
+            <article className="admin-pool-card">
+              <div className="pool-card-top">
+                <span className="pool-pair-symbols">{pool.pairLabel}</span>
+                {pool.canCollect ? (
+                  <span className="pool-badge ok">можно вывести</span>
+                ) : (
+                  <span className="pool-badge warn">ожидание</span>
+                )}
+              </div>
+
+              <div className="admin-fee-grid">
+                <div className="admin-fee-chip">
+                  <span className="pool-reserve-label">{pool.token0.symbol}</span>
+                  <span className="pool-reserve-value">
+                    {formatCollected(pool.token0.collected, pool.token0.decimals)}
+                  </span>
+                </div>
+                <div className="admin-fee-chip">
+                  <span className="pool-reserve-label">{pool.token1.symbol}</span>
+                  <span className="pool-reserve-value">
+                    {formatCollected(pool.token1.collected, pool.token1.decimals)}
+                  </span>
+                </div>
+              </div>
+
+              {pool.blockers.length > 0 && (
+                <ul className="admin-blockers">
+                  {pool.blockers.map((b) => (
+                    <li key={b}>{b}</li>
+                  ))}
+                </ul>
+              )}
+
+              {pool.canCollect && (
+                <p className="hint admin-ready-hint">К выводу: {totalCollectableHint(pool)} → {shortAddr(creatorAddr)}</p>
+              )}
+
+              <button
+                type="button"
+                className="primary"
+                disabled={busy || !pool.canCollect}
+                onClick={() => void collectFees(pool)}
+              >
+                {busy ? 'Отправка…' : pool.canCollect ? 'Вывести комиссии' : 'Вывод недоступен'}
+              </button>
+            </article>
+          </li>
+        ))}
+      </ul>
+
+      {!loading && pools.length > 0 && !anyReady && (
+        <p className="hint">
+          Сделайте swap в обе стороны ({pools.map((p) => p.pairLabel).join(', ')}), чтобы накопились комиссии по обоим токенам.
+        </p>
+      )}
+    </section>
   );
 }
 
