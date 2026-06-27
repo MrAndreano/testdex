@@ -10,16 +10,25 @@ import {
 } from './config';
 
 const COLLECT_FEES_OP = 0x1ee4911e;
+const ROUTER_SET_FEES_OP = 0x58274069;
 const FEE_DIVIDER = 10_000n;
 const COLLECT_GAS = toNano('1.1');
+const SET_FEES_GAS = toNano('0.5');
 
 export type ProtocolFeePoolStatus = {
   poolAddress: string;
   pairLabel: string;
   token0: { symbol: string; name: string; collected: bigint; decimals: number };
   token1: { symbol: string; name: string; collected: bigint; decimals: number };
+  token0Wallet: string;
+  token1Wallet: string;
+  lpFee: bigint;
+  protocolFee: bigint;
   protocolFeePercent: string;
+  poolProtocolFeeAddress: string | null;
+  feeRecipientConfigured: boolean;
   canCollect: boolean;
+  canSetupRecipient: boolean;
   blockers: string[];
 };
 
@@ -48,26 +57,67 @@ function tokenMeta(
   return { symbol: wallet.toString().slice(0, 6), name: 'Jetton', address: wallet.toString(), decimals: 9 };
 }
 
+function readPoolProtocolFeeAddress(stack: {
+  readBoolean: () => boolean;
+  readAddress: () => Address;
+  readBigNumber: () => bigint;
+  readAddressOpt?: () => Address | null;
+}): Address | null {
+  stack.readBoolean();
+  stack.readAddress();
+  stack.readBigNumber();
+  stack.readBigNumber();
+  stack.readBigNumber();
+  stack.readAddress();
+  stack.readAddress();
+  stack.readBigNumber();
+  stack.readBigNumber();
+  if (stack.readAddressOpt) {
+    return stack.readAddressOpt();
+  }
+  try {
+    return stack.readAddress();
+  } catch {
+    return null;
+  }
+}
+
 export async function loadProtocolFeeStatuses(cfg: TestDexConfig): Promise<ProtocolFeePoolStatus[]> {
   const ctx = createDexContext(cfg);
   const results: ProtocolFeePoolStatus[] = [];
+  const expectedRecipient = Address.parse(cfg.protocolFeeAddress || cfg.adminAddress);
 
   for (const poolRef of cfg.pools) {
     const poolAddress = Address.parse(poolRefAddress(poolRef));
     const pool = ctx.client.open(DEX.Pool.CPI.create(poolAddress));
     const data = await pool.getPoolData();
+    const raw = await ctx.client.runMethod(poolAddress, 'get_pool_data');
+    const poolProtocolFeeAddress = readPoolProtocolFeeAddress(raw.stack);
     const walletIndex = await buildRouterWalletIndex(cfg, ctx, data.routerAddress);
 
     const t0 = tokenMeta(data.token0WalletAddress, walletIndex, cfg, 'token0', poolRef);
     const t1 = tokenMeta(data.token1WalletAddress, walletIndex, cfg, 'token1', poolRef);
 
+    const feeRecipientConfigured =
+      poolProtocolFeeAddress != null && poolProtocolFeeAddress.equals(expectedRecipient);
+
     const blockers: string[] = [];
+    if (!feeRecipientConfigured) {
+      blockers.push(
+        'В пуле не задан адрес получателя комиссий — сначала нажмите «Настроить получателя».',
+      );
+    }
     if (data.collectedToken0ProtocolFee <= 0n) {
       blockers.push(`Нет комиссии по ${t0.symbol} — нужны swap, где ${t0.symbol} уходит из пула`);
     }
     if (data.collectedToken1ProtocolFee <= 0n) {
       blockers.push(`Нет комиссии по ${t1.symbol} — нужны swap, где ${t1.symbol} уходит из пула`);
     }
+
+    const canCollect =
+      feeRecipientConfigured &&
+      data.collectedToken0ProtocolFee > 0n &&
+      data.collectedToken1ProtocolFee > 0n;
 
     results.push({
       poolAddress: poolAddress.toString(),
@@ -84,8 +134,15 @@ export async function loadProtocolFeeStatuses(cfg: TestDexConfig): Promise<Proto
         collected: data.collectedToken1ProtocolFee,
         decimals: t1.decimals,
       },
+      token0Wallet: data.token0WalletAddress.toString(),
+      token1Wallet: data.token1WalletAddress.toString(),
+      lpFee: data.lpFee,
+      protocolFee: data.protocolFee,
       protocolFeePercent: feePercent(data.protocolFee),
-      canCollect: data.collectedToken0ProtocolFee > 0n && data.collectedToken1ProtocolFee > 0n,
+      poolProtocolFeeAddress: poolProtocolFeeAddress?.toString() ?? null,
+      feeRecipientConfigured,
+      canCollect,
+      canSetupRecipient: !feeRecipientConfigured,
       blockers,
     });
   }
@@ -103,6 +160,30 @@ export function buildCollectFeesTx(poolAddress: string, value = COLLECT_GAS) {
 
   return {
     to: Address.parse(poolAddress),
+    value,
+    body,
+  };
+}
+
+export function buildSetPoolFeesTx(cfg: TestDexConfig, pool: ProtocolFeePoolStatus, value = SET_FEES_GAS) {
+  const recipient = Address.parse(cfg.protocolFeeAddress || cfg.adminAddress);
+  const body = beginCell()
+    .storeUint(ROUTER_SET_FEES_OP, 32)
+    .storeUint(0, 64)
+    .storeUint(pool.lpFee, 16)
+    .storeUint(pool.protocolFee, 16)
+    .storeAddress(recipient)
+    .storeRef(
+      beginCell()
+        .storeAddress(Address.parse(pool.token0Wallet))
+        .storeAddress(Address.parse(pool.token1Wallet))
+        .storeAddress(recipient)
+        .endCell(),
+    )
+    .endCell();
+
+  return {
+    to: Address.parse(cfg.routerAddress),
     value,
     body,
   };

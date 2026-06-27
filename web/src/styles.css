@@ -510,6 +510,17 @@ body {
   width: 100%;
 }
 
+.admin-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.admin-actions .secondary-btn,
+.admin-actions .primary {
+  width: 100%;
+}
+
 .admin-pool-card .primary:disabled {
   opacity: 0.55;
   cursor: not-allowed;
