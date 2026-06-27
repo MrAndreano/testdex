@@ -54,7 +54,7 @@ export async function run(provider: NetworkProvider) {
     );
     const deadline = Math.floor(Date.now() / 1000) + HOUR;
 
-    color.log(` - <y>Step 1/3: send TTA to router (first side)...`);
+    color.log(` - <y>Step 1/4: send TTA to router (first side)...`);
     await walletA.sendTransfer(sender, {
         value: toNano('0.35'),
         jettonAmount: amountA,
@@ -76,14 +76,14 @@ export async function run(provider: NetworkProvider) {
 
     const pool = provider.open(Pool.createFromAddress(poolAddress));
     if (!(await provider.isContractDeployed(pool.address))) {
-        color.log(` - <y>Step 2/3: deploy pool contract with TON deposit...`);
+        color.log(` - <y>Step 2/4: deploy pool contract with TON deposit...`);
         await pool.sendDeploy(sender, toNano('0.5'));
         await provider.waitForDeploy(pool.address, 120);
     } else {
         color.log(` - <g>Pool already deployed`);
     }
 
-    color.log(` - <y>Step 3/3: send TTB to complete liquidity...`);
+    color.log(` - <y>Step 3/4: send TTB to complete liquidity...`);
     const walletB = provider.open(
         JettonWalletContract.createFromAddress(await tokenB.getWalletAddress(user)),
     );
@@ -103,6 +103,30 @@ export async function run(provider: NetworkProvider) {
             deadline,
         }),
     });
+
+    color.log(` - <y>Waiting 15s for liquidity to settle...`);
+    await sleep(15000);
+
+    const feeRecipient = (config.adminAddress as Address | null) ?? user;
+    const poolData = await pool.getPoolData();
+    const alreadySet =
+        poolData.protocolFeeAddress != null &&
+        poolData.protocolFeeAddress.equals(feeRecipient);
+
+    if (alreadySet) {
+        color.log(` - <g>Step 4/4: protocol fee recipient already set`);
+    } else {
+        color.log(` - <y>Step 4/4: set protocol fee recipient to admin...`);
+        await router.sendSetFees(sender, {
+            newLPFee: poolData.lpFee,
+            newProtocolFee: poolData.protocolFee,
+            newProtocolFeeAddress: feeRecipient,
+            leftWalletAddress: poolData.leftJettonAddress,
+            rightWalletAddress: poolData.rightJettonAddress,
+            excessesAddress: user,
+        }, toNano('0.5'));
+        color.log(` - <g>Fee recipient: ${feeRecipient.toString()}`);
+    }
 
     color.log(` - <g>Pool ready: ${pool.address.toString()}`);
     color.log(` - <g>Run: npm run export:config`);

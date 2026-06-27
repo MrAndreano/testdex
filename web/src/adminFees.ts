@@ -27,8 +27,10 @@ export type ProtocolFeePoolStatus = {
   protocolFeePercent: string;
   poolProtocolFeeAddress: string | null;
   feeRecipientConfigured: boolean;
+  /** Both fee counters > 0 — enough to call collect_fees after recipient is set. */
+  canWithdraw: boolean;
+  /** Recipient already on-chain; collect_fees works in one tx. */
   canCollect: boolean;
-  canSetupRecipient: boolean;
   blockers: string[];
 };
 
@@ -102,11 +104,6 @@ export async function loadProtocolFeeStatuses(cfg: TestDexConfig): Promise<Proto
       poolProtocolFeeAddress != null && poolProtocolFeeAddress.equals(expectedRecipient);
 
     const blockers: string[] = [];
-    if (!feeRecipientConfigured) {
-      blockers.push(
-        'В пуле не задан адрес получателя комиссий — сначала нажмите «Настроить получателя».',
-      );
-    }
     if (data.collectedToken0ProtocolFee <= 0n) {
       blockers.push(`Нет комиссии по ${t0.symbol} — нужны swap, где ${t0.symbol} уходит из пула`);
     }
@@ -114,10 +111,9 @@ export async function loadProtocolFeeStatuses(cfg: TestDexConfig): Promise<Proto
       blockers.push(`Нет комиссии по ${t1.symbol} — нужны swap, где ${t1.symbol} уходит из пула`);
     }
 
-    const canCollect =
-      feeRecipientConfigured &&
-      data.collectedToken0ProtocolFee > 0n &&
-      data.collectedToken1ProtocolFee > 0n;
+    const canWithdraw =
+      data.collectedToken0ProtocolFee > 0n && data.collectedToken1ProtocolFee > 0n;
+    const canCollect = canWithdraw && feeRecipientConfigured;
 
     results.push({
       poolAddress: poolAddress.toString(),
@@ -141,8 +137,8 @@ export async function loadProtocolFeeStatuses(cfg: TestDexConfig): Promise<Proto
       protocolFeePercent: feePercent(data.protocolFee),
       poolProtocolFeeAddress: poolProtocolFeeAddress?.toString() ?? null,
       feeRecipientConfigured,
+      canWithdraw,
       canCollect,
-      canSetupRecipient: !feeRecipientConfigured,
       blockers,
     });
   }
@@ -196,6 +192,28 @@ export function formatCollected(amount: bigint, decimals: number): string {
 
 export function totalCollectableHint(status: ProtocolFeePoolStatus): string {
   return `${formatCollected(status.token0.collected, status.token0.decimals)} ${status.token0.symbol} + ${formatCollected(status.token1.collected, status.token1.decimals)} ${status.token1.symbol}`;
+}
+
+export async function waitForFeeRecipientConfigured(
+  cfg: TestDexConfig,
+  poolAddress: string,
+  timeoutMs = 45_000,
+  intervalMs = 3_000,
+): Promise<boolean> {
+  const expected = Address.parse(cfg.protocolFeeAddress || cfg.adminAddress);
+  const deadline = Date.now() + timeoutMs;
+  const addr = Address.parse(poolAddress);
+
+  while (Date.now() < deadline) {
+    const ctx = createDexContext(cfg);
+    const raw = await ctx.client.runMethod(addr, 'get_pool_data');
+    const recipient = readPoolProtocolFeeAddress(raw.stack);
+    if (recipient != null && recipient.equals(expected)) {
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return false;
 }
 
 export function isCreatorWallet(cfg: TestDexConfig, walletAddress: string): boolean {

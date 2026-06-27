@@ -14,6 +14,7 @@ import {
   isCreatorWallet,
   loadProtocolFeeStatuses,
   totalCollectableHint,
+  waitForFeeRecipientConfigured,
   type ProtocolFeePoolStatus,
 } from './adminFees';
 
@@ -166,43 +167,7 @@ function AdminPanel(props: {
     void refresh();
   }, [cfg]);
 
-  const collectFees = async (pool: ProtocolFeePoolStatus) => {
-    if (!walletAddress) {
-      tonConnectUI.openModal();
-      return;
-    }
-    if (testnet && walletChain && walletChain !== CHAIN.TESTNET) {
-      setStatus('Кошелёк на mainnet. Включите Testnet в Tonkeeper.', true);
-      return;
-    }
-    if (!pool.feeRecipientConfigured) {
-      setStatus('Сначала настройте получателя комиссий в пуле.', true);
-      return;
-    }
-    if (!pool.canCollect) {
-      setStatus('Вывод пока недоступен — см. условия ниже.', true);
-      return;
-    }
-
-    setBusy(true);
-    setStatus(null);
-    try {
-      const tx = buildCollectFeesTx(pool.poolAddress);
-      await tonConnectUI.sendTransaction(
-        buildTonConnectRequest(cfg, [buildTonConnectMessage(tx, testnet)]),
-      );
-      setStatus(
-        `collect_fees отправлен для ${pool.pairLabel}. Jetton поступят на ${shortAddr(creatorAddr)} (~30 с).`,
-      );
-      setTimeout(() => void refresh(), 15000);
-    } catch (e: unknown) {
-      setStatus(formatTxError(e), true);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const setupFeeRecipient = async (pool: ProtocolFeePoolStatus) => {
+  const withdrawFees = async (pool: ProtocolFeePoolStatus) => {
     if (!walletAddress) {
       tonConnectUI.openModal();
       return;
@@ -212,19 +177,41 @@ function AdminPanel(props: {
       return;
     }
     if (!isCreator) {
-      setStatus('Настройка пула доступна только admin-кошельку router.', true);
+      setStatus('Вывод доступен только с admin-кошелька создателя.', true);
+      return;
+    }
+    if (!pool.canWithdraw) {
+      setStatus('Вывод пока недоступен — см. условия ниже.', true);
       return;
     }
 
     setBusy(true);
     setStatus(null);
     try {
-      const tx = buildSetPoolFeesTx(cfg, pool);
+      if (!pool.feeRecipientConfigured) {
+        setStatus('Шаг 1/2: настройка получателя комиссий (set_fees)…');
+        const setupTx = buildSetPoolFeesTx(cfg, pool);
+        await tonConnectUI.sendTransaction(
+          buildTonConnectRequest(cfg, [buildTonConnectMessage(setupTx, testnet)]),
+        );
+        const ready = await waitForFeeRecipientConfigured(cfg, pool.poolAddress);
+        if (!ready) {
+          setStatus('set_fees отправлен, но пул ещё не обновился. Подождите и нажмите ↻.', true);
+          return;
+        }
+      }
+
+      setStatus(
+        pool.feeRecipientConfigured
+          ? 'Отправка collect_fees…'
+          : 'Шаг 2/2: вывод комиссий (collect_fees)…',
+      );
+      const collectTx = buildCollectFeesTx(pool.poolAddress);
       await tonConnectUI.sendTransaction(
-        buildTonConnectRequest(cfg, [buildTonConnectMessage(tx, testnet)]),
+        buildTonConnectRequest(cfg, [buildTonConnectMessage(collectTx, testnet)]),
       );
       setStatus(
-        `set_fees отправлен: получатель комиссий ${shortAddr(creatorAddr)}. Подождите ~15 с и нажмите ↻.`,
+        `Комиссии выведены для ${pool.pairLabel}. Jetton на ${shortAddr(creatorAddr)} (~30 с).`,
       );
       setTimeout(() => void refresh(), 15000);
     } catch (e: unknown) {
@@ -244,22 +231,13 @@ function AdminPanel(props: {
       </div>
 
       <p className="hint">
-        Комиссия протокола ({pools[0]?.protocolFeePercent ?? '0.10%'} с swap) копится в пуле. Вывод — на адрес создателя.
+        Комиссия протокола ({pools[0]?.protocolFeePercent ?? '0.10%'} с swap) копится в пуле. Вывод — на admin-кошелёк ({shortAddr(creatorAddr)}).
       </p>
 
       <div className="admin-meta">
         <div className="admin-meta-row">
-          <span className="admin-meta-label">Получатель в пуле (on-chain)</span>
-          <span className="admin-meta-value">
-            {pools[0]?.poolProtocolFeeAddress
-              ? shortAddr(pools[0].poolProtocolFeeAddress)
-              : 'не задан'}
-            {pools[0]?.feeRecipientConfigured ? (
-              <span className="pool-badge ok"> OK</span>
-            ) : (
-              <span className="pool-badge warn"> нужна настройка</span>
-            )}
-          </span>
+          <span className="admin-meta-label">Получатель jetton</span>
+          <code className="admin-meta-value">{shortAddr(creatorAddr)}</code>
         </div>
         <div className="admin-meta-row">
           <span className="admin-meta-label">Ваш кошелёк</span>
@@ -284,7 +262,7 @@ function AdminPanel(props: {
 
       {walletAddress && !isCreator && (
         <div className="banner warn inline">
-          Jetton всё равно придут на <strong>{shortAddr(creatorAddr)}</strong>, не на ваш текущий адрес. Газ платит отправитель.
+          Вывод доступен только с admin-кошелька <strong>{shortAddr(creatorAddr)}</strong>.
         </div>
       )}
 
@@ -302,7 +280,7 @@ function AdminPanel(props: {
             <article className="admin-pool-card">
               <div className="pool-card-top">
                 <span className="pool-pair-symbols">{pool.pairLabel}</span>
-                {pool.canCollect ? (
+                {pool.canWithdraw ? (
                   <span className="pool-badge ok">можно вывести</span>
                 ) : (
                   <span className="pool-badge warn">ожидание</span>
@@ -332,40 +310,29 @@ function AdminPanel(props: {
                 </ul>
               )}
 
-              {pool.canCollect && (
-                <p className="hint admin-ready-hint">К выводу: {totalCollectableHint(pool)} → {shortAddr(creatorAddr)}</p>
+              {pool.canWithdraw && (
+                <p className="hint admin-ready-hint">
+                  К выводу: {totalCollectableHint(pool)} → {shortAddr(creatorAddr)}
+                  {!pool.feeRecipientConfigured && ' (при первом выводе — 2 подписи)'}
+                </p>
               )}
 
-              <div className="admin-actions">
-                {pool.canSetupRecipient && (
-                  <button
-                    type="button"
-                    className="secondary-btn"
-                    disabled={busy || !isCreator}
-                    onClick={() => void setupFeeRecipient(pool)}
-                  >
-                    {busy ? '…' : '1. Настроить получателя'}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={busy || !pool.canCollect}
-                  onClick={() => void collectFees(pool)}
-                >
-                  {busy ? 'Отправка…' : pool.canCollect ? '2. Вывести комиссии' : 'Вывод недоступен'}
-                </button>
-              </div>
+              <button
+                type="button"
+                className="primary"
+                disabled={busy || !pool.canWithdraw || !isCreator}
+                onClick={() => void withdrawFees(pool)}
+              >
+                {busy ? 'Отправка…' : pool.canWithdraw ? 'Вывести комиссии' : 'Вывод недоступен'}
+              </button>
             </article>
           </li>
         ))}
       </ul>
 
-      {!loading && pools.length > 0 && !pools.some((p) => p.canCollect) && (
+      {!loading && pools.length > 0 && !pools.some((p) => p.canWithdraw) && (
         <p className="hint">
-          {!pools[0]?.feeRecipientConfigured
-            ? 'Сначала «Настроить получателя» (set_fees через router). Затем вывод с кошелька создателя.'
-            : 'Сделайте swap в обе стороны, чтобы накопились комиссии по обоим токенам.'}
+          Сделайте swap в обе стороны, чтобы накопились комиссии по обоим токенам.
         </p>
       )}
     </section>
