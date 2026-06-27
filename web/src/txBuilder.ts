@@ -1,7 +1,7 @@
 import { Address, beginCell, toNano, type Cell } from '@ton/core';
 import type { DexContext } from './dex';
 import type { TestDexConfig, TestDexToken } from './config';
-import { getJettonWalletAddress } from './jettonWallets';
+import { getJettonWalletAddress, getRouterJettonWallet } from './jettonWallets';
 
 const GAS = {
   provideLpJetton: { gas: toNano('0.3'), forward: toNano('0.235') },
@@ -31,13 +31,6 @@ function createJettonTransferMessage(params: {
   return builder.endCell();
 }
 
-export function routerWalletForToken(token: TestDexToken): Address {
-  if (!token.routerWallet) {
-    throw new Error(`В testnet.json нет routerWallet для ${token.symbol}`);
-  }
-  return Address.parse(token.routerWallet);
-}
-
 export async function buildProvideLiquidityJettonTx(
   dex: DexContext,
   cfg: TestDexConfig,
@@ -58,7 +51,11 @@ export async function buildProvideLiquidityJettonTx(
     Address.parse(params.sendToken.address),
     user,
   );
-  const otherRouterWallet = routerWalletForToken(params.otherToken);
+  const otherRouterWallet = await getRouterJettonWallet(
+    dex,
+    params.otherToken,
+    router,
+  );
   const gas = params.singleSide ? GAS.singleSideProvideLpJetton : GAS.provideLpJetton;
 
   const forwardPayload = await dex.router.createProvideLiquidityBody({

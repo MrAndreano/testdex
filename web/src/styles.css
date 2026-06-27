@@ -299,6 +299,11 @@ body {
   color: #64748b;
 }
 
+.pool-preview code {
+  font-size: 0.8125rem;
+  word-break: break-all;
+}
+
 .pool-list {
   list-style: none;
   margin: 0;

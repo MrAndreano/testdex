@@ -61,3 +61,14 @@ export async function buildRouterWalletIndex(
 
   return index;
 }
+
+export async function getRouterJettonWallet(
+  ctx: DexContext,
+  token: TestDexToken,
+  routerAddress: Address,
+): Promise<Address> {
+  if (token.routerWallet) {
+    return Address.parse(token.routerWallet);
+  }
+  return getJettonWalletAddress(ctx, Address.parse(token.address), routerAddress);
+}

@@ -1,12 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CHAIN, useTonConnectUI, useTonWallet } from '@tonconnect/ui-react';
 import { Address, toNano } from '@ton/core';
-import { loadConfig, parseAmount, formatAmount, tokenMatchesQuery, findToken, type TestDexConfig } from './config';
+import type { TestDexConfig, TestDexToken } from './config';
+import { loadConfig, parseAmount, formatAmount, tokenMatchesQuery } from './config';
 import { createDexContext, TON_ASSET } from './dex';
 import { loadLiquidityPools, type LiquidityPoolInfo } from './pools';
 import { buildTonConnectMessage, buildTonConnectRequest } from './tonConnectTx';
 import { getJettonWalletAddress } from './jettonWallets';
 import { buildProvideLiquidityJettonTx, formatTxError } from './txBuilder';
+import { buildDeployPoolTx, getPoolAddressForTokens, isPoolDeployed } from './poolDeploy';
+import {
+  loadCustomTokens,
+  mergeConfig,
+  parseJettonAddress,
+  resolveToken,
+  saveCustomPool,
+  saveCustomToken,
+  shortTokenSymbol,
+  isSameToken,
+} from './tokens';
 import {
   buildCollectFeesTx,
   buildSetPoolFeesTx,
@@ -20,7 +32,7 @@ import {
 
 type Tab = 'swap' | 'liquidity' | 'admin';
 type LiquidityView = 'pools' | 'add';
-type LiquidityStep = 'first' | 'second';
+type LiquidityStep = 'first' | 'deploy' | 'second';
 
 export default function App() {
   const wallet = useTonWallet();
@@ -43,10 +55,34 @@ export default function App() {
     setStatusError(isError);
   };
 
+  const [customTokens, setCustomTokens] = useState<TestDexToken[]>(() => loadCustomTokens());
+  const [poolsEpoch, setPoolsEpoch] = useState(0);
+
+  const effectiveCfg = useMemo(
+    () => (cfg ? mergeConfig(cfg, customTokens) : null),
+    [cfg, customTokens, poolsEpoch],
+  );
+
+  const addCustomToken = (address: string) => {
+    const token = {
+      symbol: shortTokenSymbol(address),
+      name: 'Jetton',
+      address: Address.parse(address).toString(),
+      decimals: 9,
+    };
+    saveCustomToken(token);
+    setCustomTokens((prev) => {
+      const key = token.address;
+      if (prev.some((t) => t.address === key)) return prev;
+      return [...prev, token];
+    });
+    return token;
+  };
+
   const assets = useMemo(() => {
-    if (!cfg) return [TON_ASSET];
-    return [TON_ASSET, ...cfg.tokens.map((t) => t.symbol)];
-  }, [cfg]);
+    if (!effectiveCfg) return [TON_ASSET];
+    return [TON_ASSET, ...effectiveCfg.tokens.map((t) => t.symbol)];
+  }, [effectiveCfg]);
 
   return (
     <div className="app">
@@ -86,10 +122,11 @@ export default function App() {
         </button>
       </nav>
 
-      {cfg && tab === 'swap' && (
+      {effectiveCfg && tab === 'swap' && (
         <SwapPanel
-          cfg={cfg}
+          cfg={effectiveCfg}
           assets={assets}
+          onAddCustomToken={addCustomToken}
           walletAddress={wallet?.account.address}
           busy={busy}
           setBusy={setBusy}
@@ -97,10 +134,12 @@ export default function App() {
         />
       )}
 
-      {cfg && tab === 'liquidity' && (
+      {effectiveCfg && tab === 'liquidity' && (
         <LiquidityPanel
-          cfg={cfg}
+          cfg={effectiveCfg}
           assets={assets.filter((a) => a !== TON_ASSET)}
+          onAddCustomToken={addCustomToken}
+          onPoolSaved={() => setPoolsEpoch((n) => n + 1)}
           walletAddress={wallet?.account.address}
           walletChain={wallet?.account.chain}
           busy={busy}
@@ -109,9 +148,9 @@ export default function App() {
         />
       )}
 
-      {cfg && tab === 'admin' && (
+      {effectiveCfg && tab === 'admin' && (
         <AdminPanel
-          cfg={cfg}
+          cfg={effectiveCfg}
           walletAddress={wallet?.account.address}
           walletChain={wallet?.account.chain}
           busy={busy}
@@ -342,15 +381,16 @@ function AdminPanel(props: {
 function SwapPanel(props: {
   cfg: TestDexConfig;
   assets: string[];
+  onAddCustomToken: (address: string) => TestDexToken;
   walletAddress?: string;
   busy: boolean;
   setBusy: (v: boolean) => void;
   setStatus: (v: string | null, isError?: boolean) => void;
 }) {
   const [tonConnectUI] = useTonConnectUI();
-  const { cfg, assets, walletAddress, busy, setBusy, setStatus } = props;
-  const [from, setFrom] = useState(assets[0] ?? TON_ASSET);
-  const [to, setTo] = useState(assets[1] ?? 'TTA');
+  const { cfg, assets, onAddCustomToken, walletAddress, busy, setBusy, setStatus } = props;
+  const [from, setFrom] = useState(assets[1] ?? assets[0] ?? TON_ASSET);
+  const [to, setTo] = useState(assets[2] ?? assets[1] ?? TON_ASSET);
   const [amount, setAmount] = useState('1');
   const [slippage, setSlippage] = useState('5');
 
@@ -363,19 +403,26 @@ function SwapPanel(props: {
     setStatus(null);
     try {
       const dex = createDexContext(cfg);
-      const offerToken = findToken(cfg, from);
-      const askToken = findToken(cfg, to);
-      const offerAmount = from === TON_ASSET ? toNano(amount) : parseAmount(amount, offerToken!.decimals);
+      const router = Address.parse(cfg.routerAddress);
+      const offerToken = from === TON_ASSET ? undefined : resolveToken(cfg, from);
+      const askToken = to === TON_ASSET ? undefined : resolveToken(cfg, to);
+      const offerAmount =
+        from === TON_ASSET ? toNano(amount) : parseAmount(amount, offerToken!.decimals);
       const minAsk = 1n;
 
       let tx;
       if (from === TON_ASSET && askToken) {
+        const askWallet = await getJettonWalletAddress(
+          dex,
+          Address.parse(askToken.address),
+          router,
+        );
         tx = await dex.router.getSwapTonToJettonTxParams({
           userWalletAddress: walletAddress,
           proxyTon: dex.proxyTon,
           offerAmount,
           askJettonAddress: askToken.address,
-          askJettonWalletAddress: askToken.routerWallet,
+          askJettonWalletAddress: askWallet.toString(),
           minAskAmount: minAsk.toString(),
         });
       } else if (to === TON_ASSET && offerToken) {
@@ -398,12 +445,17 @@ function SwapPanel(props: {
           Address.parse(offerToken.address),
           Address.parse(walletAddress),
         );
+        const askWallet = await getJettonWalletAddress(
+          dex,
+          Address.parse(askToken.address),
+          router,
+        );
         tx = await dex.router.getSwapJettonToJettonTxParams({
           userWalletAddress: walletAddress,
           offerJettonAddress: offerToken.address,
           offerJettonWalletAddress: offerWallet,
           askJettonAddress: askToken.address,
-          askJettonWalletAddress: askToken.routerWallet,
+          askJettonWalletAddress: askWallet.toString(),
           offerAmount,
           minAskAmount: minAsk.toString(),
         });
@@ -425,9 +477,21 @@ function SwapPanel(props: {
   return (
     <section className="panel">
       <h2>Обмен</h2>
-      <AssetPicker label="Отдаёте" cfg={cfg} value={from} onChange={setFrom} />
+      <AssetPicker
+        label="Отдаёте"
+        cfg={cfg}
+        onAddCustomToken={onAddCustomToken}
+        value={from}
+        onChange={setFrom}
+      />
       <input className="input" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Количество" />
-      <AssetPicker label="Получаете" cfg={cfg} value={to} onChange={setTo} />
+      <AssetPicker
+        label="Получаете"
+        cfg={cfg}
+        onAddCustomToken={onAddCustomToken}
+        value={to}
+        onChange={setTo}
+      />
       <label className="field">
         Slippage %
         <input className="input small" value={slippage} onChange={(e) => setSlippage(e.target.value)} />
@@ -442,32 +506,52 @@ function SwapPanel(props: {
 function LiquidityPanel(props: {
   cfg: TestDexConfig;
   assets: string[];
+  onAddCustomToken: (address: string) => TestDexToken;
+  onPoolSaved: () => void;
   walletAddress?: string;
   walletChain?: string;
   busy: boolean;
   setBusy: (v: boolean) => void;
   setStatus: (v: string | null, isError?: boolean) => void;
 }) {
-  const { cfg, assets, walletAddress, walletChain, busy, setBusy, setStatus } = props;
+  const { cfg, assets, onAddCustomToken, onPoolSaved, walletAddress, walletChain, busy, setBusy, setStatus } = props;
   const [view, setView] = useState<LiquidityView>('pools');
   const [pools, setPools] = useState<LiquidityPoolInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedPool, setSelectedPool] = useState<LiquidityPoolInfo | null>(null);
-  const [tokenA, setTokenA] = useState(assets[0] ?? 'TTA');
-  const [tokenB, setTokenB] = useState(assets[1] ?? 'TTB');
+  const [tokenA, setTokenA] = useState(assets[0] ?? '');
+  const [tokenB, setTokenB] = useState(assets[1] ?? assets[0] ?? '');
   const [amountA, setAmountA] = useState('1000');
   const [amountB, setAmountB] = useState('1000');
   const [lpStep, setLpStep] = useState<LiquidityStep>('first');
+  const [poolPreview, setPoolPreview] = useState<string | null>(null);
   const [poolsUpdatedAt, setPoolsUpdatedAt] = useState<Date | null>(null);
   const [tonConnectUI] = useTonConnectUI();
 
   const testnet = cfg.network === 'testnet';
 
-  const sendTonConnectTx = async (tx: { to: Address; value: bigint; body?: import('@ton/core').Cell | null }) => {
+  const sendTonConnectTx = async (tx: {
+    to: Address;
+    value: bigint;
+    body?: import('@ton/core').Cell | null;
+    init?: import('@ton/core').StateInit | null;
+  }) => {
     await tonConnectUI.sendTransaction(
       buildTonConnectRequest(cfg, [buildTonConnectMessage(tx, testnet)]),
     );
+  };
+
+  const resolvePair = () => {
+    const jettonA = resolveToken(cfg, tokenA);
+    const jettonB = resolveToken(cfg, tokenB);
+    if (!jettonA || !jettonB) {
+      throw new Error('Выберите оба jetton или вставьте адрес minter (EQ…)');
+    }
+    if (isSameToken(jettonA, jettonB)) {
+      throw new Error('Токены A и B должны быть разными');
+    }
+    return { jettonA, jettonB };
   };
 
   const refreshPools = async () => {
@@ -490,10 +574,34 @@ function LiquidityPanel(props: {
     }
   }, [view, cfg]);
 
+  useEffect(() => {
+    if (view !== 'add') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { jettonA, jettonB } = resolvePair();
+        const dex = createDexContext(cfg);
+        const addr = await getPoolAddressForTokens(dex, jettonA, jettonB);
+        if (!cancelled) setPoolPreview(addr.toString());
+      } catch {
+        if (!cancelled) setPoolPreview(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [view, tokenA, tokenB, cfg]);
+
   const openAddForPool = (pool: LiquidityPoolInfo) => {
     setSelectedPool(pool);
-    setTokenA(pool.token0.symbol);
-    setTokenB(pool.token1.symbol);
+    setTokenA(pool.token0.address ?? pool.token0.symbol);
+    setTokenB(pool.token1.address ?? pool.token1.symbol);
+    setLpStep('first');
+    setView('add');
+  };
+
+  const openCreatePool = () => {
+    setSelectedPool(null);
     setLpStep('first');
     setView('add');
   };
@@ -511,8 +619,7 @@ function LiquidityPanel(props: {
     setStatus(null);
     try {
       const dex = createDexContext(cfg);
-      const jettonA = findToken(cfg, tokenA)!;
-      const jettonB = findToken(cfg, tokenB)!;
+      const { jettonA, jettonB } = resolvePair();
       const amtA = parseAmount(amountA, jettonA.decimals);
       if (amtA <= 0n) throw new Error('Укажите количество первого токена');
 
@@ -526,11 +633,43 @@ function LiquidityPanel(props: {
       });
 
       await sendTonConnectTx(txA);
-      setLpStep('second');
+      const poolAddr = await getPoolAddressForTokens(dex, jettonA, jettonB);
+      const deployed = await isPoolDeployed(dex, poolAddr);
+      setPoolPreview(poolAddr.toString());
+      setLpStep(deployed ? 'second' : 'deploy');
       setStatus(
-        `Шаг 1/2: ${formatAmount(amtA, jettonA.decimals)} ${tokenA} отправлено. ` +
-          `Подождите ~15 с и нажмите «Шаг 2: ${tokenB}». Нужно ~1 TON на газ.`,
+        deployed
+          ? `Шаг 1/2: ${formatAmount(amtA, jettonA.decimals)} ${jettonA.symbol} отправлено. Подождите ~15 с и нажмите шаг 2.`
+          : `Шаг 1/3: ${formatAmount(amtA, jettonA.decimals)} ${jettonA.symbol} отправлено. Далее — деплой пула (~0.5 TON).`,
       );
+      void refreshPools();
+    } catch (e: unknown) {
+      setStatus(formatTxError(e), true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const provideDeploy = async () => {
+    if (!walletAddress) {
+      tonConnectUI.openModal();
+      return;
+    }
+    if (cfg.network === 'testnet' && walletChain && walletChain !== CHAIN.TESTNET) {
+      setStatus('Кошелёк на mainnet. Включите Testnet в Tonkeeper.', true);
+      return;
+    }
+    setBusy(true);
+    setStatus(null);
+    try {
+      const dex = createDexContext(cfg);
+      const { jettonA, jettonB } = resolvePair();
+      const tx = await buildDeployPoolTx(dex, cfg, jettonA, jettonB);
+      await sendTonConnectTx(tx);
+      saveCustomPool(tx.to.toString());
+      onPoolSaved();
+      setLpStep('second');
+      setStatus('Шаг 2/3: пул задеплоен. Подождите ~15 с и отправьте второй токен.');
       void refreshPools();
     } catch (e: unknown) {
       setStatus(formatTxError(e), true);
@@ -552,8 +691,7 @@ function LiquidityPanel(props: {
     setStatus(null);
     try {
       const dex = createDexContext(cfg);
-      const jettonA = findToken(cfg, tokenA)!;
-      const jettonB = findToken(cfg, tokenB)!;
+      const { jettonA, jettonB } = resolvePair();
       const amtB = parseAmount(amountB, jettonB.decimals);
       if (amtB <= 0n) throw new Error('Укажите количество второго токена');
 
@@ -567,8 +705,11 @@ function LiquidityPanel(props: {
       });
 
       await sendTonConnectTx(txB);
+      const poolAddr = await getPoolAddressForTokens(dex, jettonA, jettonB);
+      saveCustomPool(poolAddr.toString());
+      onPoolSaved();
       setLpStep('first');
-      setStatus(`Ликвидность добавлена: ${amountA} ${tokenA} + ${amountB} ${tokenB}`);
+      setStatus(`Ликвидность добавлена: ${amountA} ${jettonA.symbol} + ${amountB} ${jettonB.symbol}`);
       void refreshPools();
       setView('pools');
     } catch (e: unknown) {
@@ -581,9 +722,20 @@ function LiquidityPanel(props: {
   const provide = async () => {
     if (lpStep === 'first') {
       await provideFirst();
+    } else if (lpStep === 'deploy') {
+      await provideDeploy();
     } else {
       await provideSecond();
     }
+  };
+
+  const stepLabel = () => {
+    const a = resolveToken(cfg, tokenA)?.symbol ?? 'A';
+    const b = resolveToken(cfg, tokenB)?.symbol ?? 'B';
+    if (busy) return 'Отправка…';
+    if (lpStep === 'first') return `Шаг 1: отправить ${a}`;
+    if (lpStep === 'deploy') return 'Шаг 2: задеплоить пул (~0.5 TON)';
+    return lpStep === 'second' && !selectedPool ? `Шаг 3: отправить ${b}` : `Шаг 2: отправить ${b}`;
   };
 
   return (
@@ -608,8 +760,8 @@ function LiquidityPanel(props: {
           Пулы
           {pools.length > 0 && <span className="sub-tab-count">{pools.length}</span>}
         </button>
-        <button type="button" className={view === 'add' ? 'active' : ''} onClick={() => setView('add')}>
-          Внести
+        <button type="button" className={view === 'add' ? 'active' : ''} onClick={() => openCreatePool()}>
+          Создать пул
         </button>
       </nav>
 
@@ -629,8 +781,8 @@ function LiquidityPanel(props: {
 
           {!loading && !loadError && pools.length === 0 && (
             <div className="liquidity-empty">
-              <p className="hint">Добавьте адрес пула в <code>testnet.json</code> или создайте новый через «Внести».</p>
-              <button type="button" className="secondary-btn" onClick={() => setView('add')}>
+              <p className="hint">Создайте пул с любыми jetton testnet — вставьте адрес minter (EQ…) в поле токена.</p>
+              <button type="button" className="secondary-btn" onClick={() => openCreatePool()}>
                 Создать пул
               </button>
             </div>
@@ -665,14 +817,31 @@ function LiquidityPanel(props: {
           )}
 
           <p className="hint">
-            Два шага: сначала {tokenA}, затем {tokenB}. На шаге 1 нужно ~1 TON на газ. Tonkeeper на Android: подтверждайте каждый шаг отдельно.
+            {lpStep === 'deploy'
+              ? 'Новый пул: после первого jetton нужен деплой контракта (~0.5 TON), затем второй токен.'
+              : 'Выберите два jetton из списка или вставьте адрес minter (EQ…). На шаге 1 нужно ~1 TON на газ.'}
           </p>
+
+          {poolPreview && (
+            <p className="hint pool-preview">
+              Адрес пула: <code>{shortAddr(poolPreview)}</code>
+            </p>
+          )}
 
           {lpStep === 'second' && (
             <div className="selected-pool-banner">
               <span>
-                Шаг 2/2 — отправьте <strong>{tokenB}</strong> после подтверждения первой транзакции
+                Отправьте <strong>{resolveToken(cfg, tokenB)?.symbol ?? tokenB}</strong> после предыдущих шагов
               </span>
+              <button type="button" className="link-btn" onClick={() => setLpStep('first')}>
+                Сбросить
+              </button>
+            </div>
+          )}
+
+          {lpStep === 'deploy' && (
+            <div className="selected-pool-banner">
+              <span>Задеплойте контракт пула перед отправкой второго jetton</span>
               <button type="button" className="link-btn" onClick={() => setLpStep('first')}>
                 Сбросить
               </button>
@@ -681,24 +850,34 @@ function LiquidityPanel(props: {
 
           <div className="liquidity-deposit">
             <div className="deposit-row">
-              <AssetPicker label="Токен A" cfg={cfg} includeTon={false} value={tokenA} onChange={setTokenA} />
+              <AssetPicker
+                label="Токен A"
+                cfg={cfg}
+                includeTon={false}
+                onAddCustomToken={onAddCustomToken}
+                value={tokenA}
+                onChange={setTokenA}
+              />
               <input className="input" value={amountA} onChange={(e) => setAmountA(e.target.value)} placeholder="0" />
             </div>
             <div className="deposit-plus" aria-hidden>
               +
             </div>
             <div className="deposit-row">
-              <AssetPicker label="Токен B" cfg={cfg} includeTon={false} value={tokenB} onChange={setTokenB} />
+              <AssetPicker
+                label="Токен B"
+                cfg={cfg}
+                includeTon={false}
+                onAddCustomToken={onAddCustomToken}
+                value={tokenB}
+                onChange={setTokenB}
+              />
               <input className="input" value={amountB} onChange={(e) => setAmountB(e.target.value)} placeholder="0" />
             </div>
           </div>
 
           <button type="button" className="primary" disabled={busy} onClick={provide}>
-            {busy
-              ? 'Отправка…'
-              : lpStep === 'first'
-                ? `Шаг 1: отправить ${tokenA}`
-                : `Шаг 2: отправить ${tokenB}`}
+            {stepLabel()}
           </button>
         </div>
       )}
@@ -763,13 +942,14 @@ function AssetPicker(props: {
   includeTon?: boolean;
   value: string;
   onChange: (v: string) => void;
+  onAddCustomToken?: (address: string) => TestDexToken;
 }) {
-  const { label, cfg, includeTon = true, value, onChange } = props;
+  const { label, cfg, includeTon = true, value, onChange, onAddCustomToken } = props;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
 
   const options = useMemo(() => {
-    const list: { id: string; title: string; subtitle?: string }[] = [];
+    const list: { id: string; title: string; subtitle?: string; custom?: boolean }[] = [];
     if (includeTon) list.push({ id: TON_ASSET, title: 'TON', subtitle: 'Native' });
     for (const t of cfg.tokens) {
       list.push({ id: t.symbol, title: `${t.symbol} — ${t.name}`, subtitle: t.address });
@@ -779,18 +959,51 @@ function AssetPicker(props: {
 
   const filtered = useMemo(() => {
     const q = query.trim();
-    if (!q) return options;
-    return options.filter((opt) => {
-      if (opt.id === TON_ASSET) return /ton|native/i.test(q);
-      const token = cfg.tokens.find((t) => t.symbol === opt.id);
-      return token ? tokenMatchesQuery(token, q) : false;
-    });
+    const base = !q
+      ? options
+      : options.filter((opt) => {
+          if (opt.id === TON_ASSET) return /ton|native/i.test(q);
+          const token = cfg.tokens.find((t) => t.symbol === opt.id);
+          return token ? tokenMatchesQuery(token, q) : false;
+        });
+
+    const addr = parseJettonAddress(q);
+    if (!addr) return base;
+
+    const addrStr = addr.toString();
+    const alreadyListed = cfg.tokens.some(
+      (t) => t.address === addrStr || t.symbol === q,
+    );
+    if (alreadyListed) return base;
+
+    return [
+      ...base,
+      {
+        id: addrStr,
+        title: `Jetton ${shortTokenSymbol(addrStr)}`,
+        subtitle: addrStr,
+        custom: true,
+      },
+    ];
   }, [options, query, cfg]);
 
-  const selected = options.find((o) => o.id === value);
+  const resolved = resolveToken(cfg, value);
+  const selectedTitle = value === TON_ASSET
+    ? 'TON'
+    : resolved
+      ? `${resolved.symbol} — ${resolved.name}`
+      : value;
 
-  const pick = (id: string) => {
-    onChange(id);
+  const pick = (id: string, custom?: boolean) => {
+    if (custom && onAddCustomToken) {
+      onAddCustomToken(id);
+      onChange(id);
+    } else if (id.startsWith('EQ') || id.startsWith('UQ') || id.includes(':')) {
+      if (onAddCustomToken) onAddCustomToken(id);
+      onChange(id);
+    } else {
+      onChange(id);
+    }
     setOpen(false);
     setQuery('');
   };
@@ -801,7 +1014,7 @@ function AssetPicker(props: {
       <div className="token-select">
         <input
           className="input"
-          value={open ? query : selected?.title ?? value}
+          value={open ? query : selectedTitle}
           onChange={(e) => {
             setQuery(e.target.value);
             setOpen(true);
@@ -813,7 +1026,8 @@ function AssetPicker(props: {
           onKeyDown={(e) => {
             if (e.key === 'Enter' && filtered.length === 1) {
               e.preventDefault();
-              pick(filtered[0]!.id);
+              const opt = filtered[0]!;
+              pick(opt.id, opt.custom);
             }
             if (e.key === 'Escape') {
               setOpen(false);
@@ -829,9 +1043,9 @@ function AssetPicker(props: {
                 <button
                   type="button"
                   role="option"
-                  className={opt.id === value ? 'active' : ''}
+                  className={opt.id === value || opt.title.startsWith(resolved?.symbol ?? '§') ? 'active' : ''}
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => pick(opt.id)}
+                  onClick={() => pick(opt.id, opt.custom)}
                 >
                   <span className="token-select-title">{opt.title}</span>
                   {opt.subtitle && opt.id !== TON_ASSET && (
@@ -843,7 +1057,7 @@ function AssetPicker(props: {
           </ul>
         )}
         {open && filtered.length === 0 && query.trim() && (
-          <div className="token-select-empty">Токен не найден</div>
+          <div className="token-select-empty">Вставьте адрес jetton minter (EQ…)</div>
         )}
         {open && (
           <button

@@ -9,6 +9,7 @@ const FEE_DIVIDER = 10_000n;
 export type PoolTokenSide = {
   symbol: string;
   name: string;
+  address?: string;
   reserve: bigint;
   decimals: number;
   collectedProtocolFee: bigint;
@@ -40,6 +41,7 @@ function makeSide(token: TestDexToken, reserve: bigint, collectedProtocolFee: bi
   return {
     symbol: token.symbol,
     name: token.name,
+    address: token.address,
     reserve,
     decimals: token.decimals,
     collectedProtocolFee,
