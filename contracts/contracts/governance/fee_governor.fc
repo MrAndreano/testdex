@@ -1,0 +1,118 @@
+#pragma version >=0.4.0;
+
+#include "../../node_modules/@ston-fi/funcbox/autoload.fc";
+
+const int op::gov_add_holder = 0x881a7f01;
+const int op::gov_remove_holder = 0x881a7f02;
+const int op::router_set_fees = 0x58274069;
+
+global slice storage::router_address;
+global slice storage::owner_address;
+global cell storage::key_holders;
+
+() storage::load() impure inline {
+    slice ds = get_data().begin_parse();
+    storage::router_address = ds~load_msg_addr();
+    storage::owner_address = ds~load_msg_addr();
+    storage::key_holders = ds~load_dict();
+    ds.end_parse();
+}
+
+() storage::save() impure inline {
+    set_data(
+        begin_cell()
+            .store_slice(storage::router_address)
+            .store_slice(storage::owner_address)
+            .store_dict(storage::key_holders)
+        .end_cell()
+    );
+}
+
+int holder_key(slice addr) inline {
+    return addr.preload_uint(256);
+}
+
+int is_key_holder(slice addr) inline {
+    (slice val, int found) = storage::key_holders.udict_get?(256, holder_key(addr));
+    return found;
+}
+
+() set_key_holder(slice addr, int enabled) impure inline {
+    if enabled {
+        storage::key_holders~udict_set(256, holder_key(addr), begin_cell().store_uint(1, 1).end_cell().begin_parse());
+    } else {
+        storage::key_holders~udict_delete?(256, holder_key(addr));
+    }
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    throw_if(0, in_msg_body.slice_empty?());
+
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    throw_if(0, flags & 1);
+    slice sender = cs~load_msg_addr();
+    cs.end_parse();
+
+    storage::load();
+
+    int op = in_msg_body.preload_uint(32);
+
+    if op == op::gov_add_holder {
+        in_msg_body~load_uint(32);
+        throw_unless(401, equal_slices(sender, storage::owner_address));
+        slice holder = in_msg_body~load_msg_addr();
+        in_msg_body.end_parse();
+        set_key_holder(holder, 1);
+        storage::save();
+        return ();
+    }
+
+    if op == op::gov_remove_holder {
+        in_msg_body~load_uint(32);
+        throw_unless(401, equal_slices(sender, storage::owner_address));
+        slice holder = in_msg_body~load_msg_addr();
+        in_msg_body.end_parse();
+        set_key_holder(holder, 0);
+        storage::save();
+        return ();
+    }
+
+    if op == op::router_set_fees {
+        throw_unless(403, is_key_holder(sender));
+        throw_unless(70, msg_value > 50000000);
+        send_raw_message(
+            begin_cell()
+                .store_uint(0x18, 6)
+                .store_slice(storage::router_address)
+                .store_coins(msg_value - 10000000)
+                .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+                .store_slice(in_msg_body)
+            .end_cell(),
+            1
+        );
+        return ();
+    }
+
+    throw(0xffff);
+}
+
+slice get_router_address() method_id {
+    storage::load();
+    return storage::router_address;
+}
+
+slice get_owner_address() method_id {
+    storage::load();
+    return storage::owner_address;
+}
+
+int is_holder(slice addr) method_id {
+    storage::load();
+    return is_key_holder(addr);
+}
+
+int get_holders_count() method_id {
+    storage::load();
+    return storage::key_holders.cell::dict_size(256);
+}

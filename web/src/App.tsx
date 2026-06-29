@@ -24,15 +24,19 @@ import {
   buildSetPoolFeesTx,
   formatCollected,
   isFeeRecipientWallet,
+  isFeeGovernorRouterAdmin,
+  isGovernorKeyHolder,
   isRouterAdmin,
   loadProtocolFeeStatuses,
   loadStoredFeeRecipient,
   parseFeeRecipientInput,
   saveStoredFeeRecipient,
+  setFeesTarget,
   totalCollectableHint,
   waitForFeeRecipientConfigured,
   type ProtocolFeePoolStatus,
 } from './adminFees';
+import { resolveGovernanceAccess, type GovernanceAccess } from './governanceNft';
 
 type Tab = 'swap' | 'liquidity' | 'admin';
 type LiquidityView = 'pools' | 'add';
@@ -188,9 +192,13 @@ function AdminPanel(props: {
   const [pools, setPools] = useState<ProtocolFeePoolStatus[]>([]);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [recipientInput, setRecipientInput] = useState(() => loadStoredFeeRecipient(cfg));
+  const [governance, setGovernance] = useState<GovernanceAccess | null>(null);
+  const [governorIsRouterAdmin, setGovernorIsRouterAdmin] = useState<boolean | null>(null);
 
   const defaultRecipient = cfg.protocolFeeAddress || cfg.adminAddress;
-  const isAdmin = walletAddress ? isRouterAdmin(cfg, walletAddress) : false;
+  const isAdmin = governance?.isRouterAdmin ?? (walletAddress ? isRouterAdmin(cfg, walletAddress) : false);
+  const hasGovernanceKey = governance?.hasKey ?? false;
+  const canManageFees = governance?.canManageFeeRecipient ?? isAdmin;
   const testnet = cfg.network === 'testnet';
 
   let desiredRecipient = defaultRecipient;
@@ -224,6 +232,25 @@ function AdminPanel(props: {
     void refresh();
   }, [cfg, recipientInput]);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const onChainHolder = walletAddress ? await isGovernorKeyHolder(cfg, walletAddress) : false;
+      const access = await resolveGovernanceAccess(cfg, walletAddress, onChainHolder);
+      const govAdmin = cfg.feeGovernorAddress ? await isFeeGovernorRouterAdmin(cfg) : null;
+      if (!cancelled) {
+        setGovernance(access);
+        setGovernorIsRouterAdmin(govAdmin);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cfg, walletAddress]);
+
+  const feesTxTarget = () =>
+    setFeesTarget(cfg, { isRouterAdmin: isAdmin, hasGovernanceKey: hasGovernanceKey });
+
   const applyFeeRecipient = async (pool: ProtocolFeePoolStatus) => {
     if (!walletAddress) {
       tonConnectUI.openModal();
@@ -233,8 +260,12 @@ function AdminPanel(props: {
       setStatus('Кошелёк на mainnet. Включите Testnet в Tonkeeper.', true);
       return;
     }
-    if (!isAdmin) {
-      setStatus('Смена получателя доступна только admin-кошельку router.', true);
+    if (!canManageFees) {
+      setStatus('Нужен Governance Key NFT или admin router.', true);
+      return;
+    }
+    if (hasGovernanceKey && cfg.feeGovernorAddress && governorIsRouterAdmin === false) {
+      setStatus('FeeGovernor ещё не admin router — set_fees не пройдёт on-chain.', true);
       return;
     }
 
@@ -243,7 +274,7 @@ function AdminPanel(props: {
     try {
       const recipient = parseFeeRecipientInput(recipientInput);
       saveStoredFeeRecipient(recipient);
-      const setupTx = buildSetPoolFeesTx(cfg, pool, recipient);
+      const setupTx = buildSetPoolFeesTx(cfg, pool, recipient, undefined, feesTxTarget());
       await tonConnectUI.sendTransaction(
         buildTonConnectRequest(cfg, [buildTonConnectMessage(setupTx, testnet)]),
       );
@@ -282,15 +313,16 @@ function AdminPanel(props: {
       saveStoredFeeRecipient(recipient);
 
       if (!pool.feeRecipientConfigured) {
-        if (!isAdmin) {
-          setStatus(
-            'Сначала admin назначает получателя, затем вывод подписывает кошелёк получателя.',
-            true,
-          );
+        if (!canManageFees) {
+          setStatus('Назначить получателя может admin или держатель Governance Key NFT.', true);
+          return;
+        }
+        if (hasGovernanceKey && cfg.feeGovernorAddress && governorIsRouterAdmin === false) {
+          setStatus('FeeGovernor не admin router — сначала завершите transfer admin.', true);
           return;
         }
         setStatus('Шаг 1/2: настройка получателя комиссий (set_fees)…');
-        const setupTx = buildSetPoolFeesTx(cfg, pool, recipient);
+        const setupTx = buildSetPoolFeesTx(cfg, pool, recipient, undefined, feesTxTarget());
         await tonConnectUI.sendTransaction(
           buildTonConnectRequest(cfg, [buildTonConnectMessage(setupTx, testnet)]),
         );
@@ -340,8 +372,19 @@ function AdminPanel(props: {
 
       <p className="hint">
         Комиссия протокола ({pools[0]?.protocolFeePercent ?? '0.10%'} с swap) копится в пуле.
-        Admin router назначает получателя (<code>set_fees</code>), вывод подписывает кошелёк получателя.
+        Сменить получателя могут <strong>admin router</strong> или держатель <strong>Governance Key NFT</strong>.
+        Вывод jetton подписывает кошелёк получателя.
       </p>
+
+      {cfg.feeGovernorAddress && governorIsRouterAdmin === false && (
+        <div className="banner warn inline">
+          FeeGovernor ({shortAddr(cfg.feeGovernorAddress)}) ещё не admin router — NFT-ключ не сможет вызвать set_fees.
+        </div>
+      )}
+
+      {governance?.error && (
+        <div className="banner warn inline">Проверка NFT: {governance.error}</div>
+      )}
 
       <div className="admin-meta">
         <label className="field admin-recipient-field">
@@ -353,9 +396,21 @@ function AdminPanel(props: {
             placeholder="EQ…"
           />
           <span className="hint admin-recipient-hint">
-            По умолчанию из config. Сохраняется в браузере. Для каждого пула — «Применить к пулу».
+            Куда придут jetton при collect_fees. Сохраняется в браузере.
           </span>
         </label>
+        {cfg.governanceNftCollectionAddress && (
+          <div className="admin-meta-row">
+            <span className="admin-meta-label">Governance Key NFT</span>
+            <code className="admin-meta-value">{shortAddr(cfg.governanceNftCollectionAddress)}</code>
+          </div>
+        )}
+        {cfg.feeGovernorAddress && (
+          <div className="admin-meta-row">
+            <span className="admin-meta-label">FeeGovernor</span>
+            <code className="admin-meta-value">{shortAddr(cfg.feeGovernorAddress)}</code>
+          </div>
+        )}
         <div className="admin-meta-row">
           <span className="admin-meta-label">Admin router</span>
           <code className="admin-meta-value">{shortAddr(cfg.adminAddress)}</code>
@@ -368,14 +423,10 @@ function AdminPanel(props: {
                 {shortAddr(walletAddress)}{' '}
                 {isAdmin ? (
                   <span className="pool-badge ok">admin</span>
-                ) : isFeeRecipientWallet(
-                  { poolProtocolFeeAddress: desiredRecipient } as ProtocolFeePoolStatus,
-                  walletAddress,
-                  desiredRecipient,
-                ) ? (
-                  <span className="pool-badge ok">получатель</span>
+                ) : hasGovernanceKey ? (
+                  <span className="pool-badge ok">governance key</span>
                 ) : (
-                  <span className="pool-badge warn">другой</span>
+                  <span className="pool-badge warn">нет доступа</span>
                 )}
               </>
             ) : (
@@ -387,13 +438,13 @@ function AdminPanel(props: {
 
       {!walletAddress && (
         <div className="banner warn inline">
-          Подключите кошелёк admin или получателя для операций с комиссиями.
+          Подключите кошелёк admin или держателя Governance Key NFT.
         </div>
       )}
 
-      {walletAddress && !isAdmin && pools.some((p) => p.canWithdraw && !isFeeRecipientWallet(p, walletAddress, desiredRecipient)) && (
+      {walletAddress && !canManageFees && (
         <div className="banner warn inline">
-          Вывод подписывает <strong>получатель</strong> ({shortAddr(desiredRecipient)}), не admin.
+          Для смены получателя нужен Governance Key NFT из коллекции выше или admin router.
         </div>
       )}
 
@@ -460,7 +511,7 @@ function AdminPanel(props: {
               )}
 
               <div className="admin-actions">
-                {!pool.feeRecipientConfigured && isAdmin && (
+                {!pool.feeRecipientConfigured && canManageFees && (
                   <button
                     type="button"
                     className="secondary-btn"
@@ -476,7 +527,8 @@ function AdminPanel(props: {
                   disabled={
                     busy ||
                     !pool.canWithdraw ||
-                    (!isAdmin && !isFeeRecipientWallet(pool, walletAddress ?? '', desiredRecipient))
+                    (!canManageFees &&
+                      !isFeeRecipientWallet(pool, walletAddress ?? '', desiredRecipient))
                   }
                   onClick={() => void withdrawFees(pool)}
                 >

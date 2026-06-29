@@ -13,6 +13,8 @@
         "deploy:liquidity": "ts-node scripts/deployAll.ts --step=liquidity",
         "deploy:all": "ts-node scripts/deployAll.ts --step=all",
         "check:wallet": "ts-node scripts/checkWallet.ts",
+        "deploy:governor": "blueprint run deployFeeGovernor",
+        "setup:governor-holder": "blueprint run setupGovernorHolder",
         "export:config": "ts-node scripts/exportConfig.ts"
     },
     "devDependencies": {

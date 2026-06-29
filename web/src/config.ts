@@ -28,6 +28,10 @@ export type TestDexConfig = {
   ptonMasterAddress: string;
   adminAddress: string;
   protocolFeeAddress: string;
+  /** NFT collection — держатели могут менять получателя комиссий (с FeeGovernor). */
+  governanceNftCollectionAddress?: string;
+  /** Контракт-прокси set_fees для key holders (должен быть admin router). */
+  feeGovernorAddress?: string;
   dexVersion: string;
   routerType: string;
   tokens: TestDexToken[];

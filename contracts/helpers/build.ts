@@ -54,4 +54,10 @@ import { POOL_TYPES, preprocBuildContractsLocal } from "./helpers";
         base64: true,
     });
 
+    console.log("\tCompiling FeeGovernor...");
+    await compileX('FeeGovernor', {
+        cells: true,
+        base64: true,
+    });
+
 })();

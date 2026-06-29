@@ -183,8 +183,13 @@ export function buildSetPoolFeesTx(
   pool: ProtocolFeePoolStatus,
   recipientAddress: string,
   value = SET_FEES_GAS,
+  target: 'router' | 'governor' = 'router',
 ) {
   const recipient = Address.parse(recipientAddress);
+  const to =
+    target === 'governor' && cfg.feeGovernorAddress
+      ? Address.parse(cfg.feeGovernorAddress)
+      : Address.parse(cfg.routerAddress);
   const body = beginCell()
     .storeUint(ROUTER_SET_FEES_OP, 32)
     .storeUint(0, 64)
@@ -201,10 +206,48 @@ export function buildSetPoolFeesTx(
     .endCell();
 
   return {
-    to: Address.parse(cfg.routerAddress),
+    to,
     value,
     body,
   };
+}
+
+export async function isGovernorKeyHolder(cfg: TestDexConfig, walletAddress: string): Promise<boolean> {
+  if (!cfg.feeGovernorAddress) return false;
+  try {
+    const ctx = createDexContext(cfg);
+    const wallet = Address.parse(walletAddress);
+    const res = await ctx.client.runMethod(Address.parse(cfg.feeGovernorAddress), 'is_holder', [
+      { type: 'slice', cell: beginCell().storeAddress(wallet).endCell() },
+    ]);
+    return res.stack.readNumber() !== 0;
+  } catch {
+    return false;
+  }
+}
+
+export async function isFeeGovernorRouterAdmin(cfg: TestDexConfig): Promise<boolean> {
+  if (!cfg.feeGovernorAddress) return false;
+  try {
+    const ctx = createDexContext(cfg);
+    const data = await ctx.router.getRouterData();
+    return data.adminAddress.equals(Address.parse(cfg.feeGovernorAddress));
+  } catch {
+    return false;
+  }
+}
+
+export function setFeesTarget(
+  cfg: TestDexConfig,
+  opts: { isRouterAdmin: boolean; hasGovernanceKey: boolean },
+): 'router' | 'governor' {
+  if (opts.hasGovernanceKey && cfg.feeGovernorAddress) {
+    return 'governor';
+  }
+  if (opts.isRouterAdmin) {
+    return 'router';
+  }
+  return cfg.feeGovernorAddress ? 'governor' : 'router';
 }
 
 export function formatCollected(amount: bigint, decimals: number): string {

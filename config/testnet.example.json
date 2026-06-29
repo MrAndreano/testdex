@@ -7,6 +7,8 @@
   "ptonMasterAddress": "",
   "adminAddress": "",
   "protocolFeeAddress": "",
+  "governanceNftCollectionAddress": "",
+  "feeGovernorAddress": "",
   "dexVersion": "v2_1",
   "routerType": "CPI",
   "tokens": [

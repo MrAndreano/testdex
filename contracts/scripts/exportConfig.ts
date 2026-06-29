@@ -112,6 +112,14 @@ async function main() {
         base.adminAddress = String(contractsCfg.adminAddress);
         base.protocolFeeAddress = String(contractsCfg.adminAddress);
     }
+    if (contractsCfg?.feeGovernorAddress) {
+        (base as Record<string, unknown>).feeGovernorAddress = String(contractsCfg.feeGovernorAddress);
+    }
+    if (contractsCfg?.governanceNftCollectionAddress) {
+        (base as Record<string, unknown>).governanceNftCollectionAddress = String(
+            contractsCfg.governanceNftCollectionAddress,
+        );
+    }
     if (ptonCfg?.minterAddress) {
         base.ptonMasterAddress = String(ptonCfg.minterAddress);
     }

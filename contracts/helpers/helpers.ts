@@ -247,6 +247,8 @@ export const configParams = {
     tokenAlphaAddress: resolvers.address,
     tokenBetaAddress: resolvers.address,
     adminAddress: resolvers.address,
+    feeGovernorAddress: resolvers.address,
+    governanceNftCollectionAddress: resolvers.address,
     tokenAmount: resolvers.bigint,
     libLpAccountAddress: resolvers.address,
     libLpWalletAddress: resolvers.address,
