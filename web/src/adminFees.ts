@@ -26,7 +26,10 @@ export type ProtocolFeePoolStatus = {
   protocolFee: bigint;
   protocolFeePercent: string;
   poolProtocolFeeAddress: string | null;
+  /** On-chain recipient matches the desired address from admin UI / config. */
   feeRecipientConfigured: boolean;
+  /** Any protocol fee address is set in the pool. */
+  hasFeeRecipient: boolean;
   /** Both fee counters > 0 — enough to call collect_fees after recipient is set. */
   canWithdraw: boolean;
   /** Recipient already on-chain; collect_fees works in one tx. */
@@ -84,10 +87,15 @@ function readPoolProtocolFeeAddress(stack: {
   }
 }
 
-export async function loadProtocolFeeStatuses(cfg: TestDexConfig): Promise<ProtocolFeePoolStatus[]> {
+export async function loadProtocolFeeStatuses(
+  cfg: TestDexConfig,
+  desiredRecipientAddress?: string,
+): Promise<ProtocolFeePoolStatus[]> {
   const ctx = createDexContext(cfg);
   const results: ProtocolFeePoolStatus[] = [];
-  const expectedRecipient = Address.parse(cfg.protocolFeeAddress || cfg.adminAddress);
+  const expectedRecipient = Address.parse(
+    desiredRecipientAddress || cfg.protocolFeeAddress || cfg.adminAddress,
+  );
 
   for (const poolRef of cfg.pools) {
     const poolAddress = Address.parse(poolRefAddress(poolRef));
@@ -100,10 +108,18 @@ export async function loadProtocolFeeStatuses(cfg: TestDexConfig): Promise<Proto
     const t0 = tokenMeta(data.token0WalletAddress, walletIndex, cfg, 'token0', poolRef);
     const t1 = tokenMeta(data.token1WalletAddress, walletIndex, cfg, 'token1', poolRef);
 
+    const hasFeeRecipient = poolProtocolFeeAddress != null;
     const feeRecipientConfigured =
-      poolProtocolFeeAddress != null && poolProtocolFeeAddress.equals(expectedRecipient);
+      hasFeeRecipient && poolProtocolFeeAddress!.equals(expectedRecipient);
 
     const blockers: string[] = [];
+    if (!hasFeeRecipient) {
+      blockers.push('В пуле не задан получатель — будет настроен автоматически перед выводом.');
+    } else if (!feeRecipientConfigured) {
+      blockers.push(
+        `Получатель в пуле (${shortAddr(poolProtocolFeeAddress!.toString())}) отличается от выбранного.`,
+      );
+    }
     if (data.collectedToken0ProtocolFee <= 0n) {
       blockers.push(`Нет комиссии по ${t0.symbol} — нужны swap, где ${t0.symbol} уходит из пула`);
     }
@@ -137,6 +153,7 @@ export async function loadProtocolFeeStatuses(cfg: TestDexConfig): Promise<Proto
       protocolFeePercent: feePercent(data.protocolFee),
       poolProtocolFeeAddress: poolProtocolFeeAddress?.toString() ?? null,
       feeRecipientConfigured,
+      hasFeeRecipient,
       canWithdraw,
       canCollect,
       blockers,
@@ -161,8 +178,13 @@ export function buildCollectFeesTx(poolAddress: string, value = COLLECT_GAS) {
   };
 }
 
-export function buildSetPoolFeesTx(cfg: TestDexConfig, pool: ProtocolFeePoolStatus, value = SET_FEES_GAS) {
-  const recipient = Address.parse(cfg.protocolFeeAddress || cfg.adminAddress);
+export function buildSetPoolFeesTx(
+  cfg: TestDexConfig,
+  pool: ProtocolFeePoolStatus,
+  recipientAddress: string,
+  value = SET_FEES_GAS,
+) {
+  const recipient = Address.parse(recipientAddress);
   const body = beginCell()
     .storeUint(ROUTER_SET_FEES_OP, 32)
     .storeUint(0, 64)
@@ -197,10 +219,11 @@ export function totalCollectableHint(status: ProtocolFeePoolStatus): string {
 export async function waitForFeeRecipientConfigured(
   cfg: TestDexConfig,
   poolAddress: string,
+  expectedRecipientAddress: string,
   timeoutMs = 45_000,
   intervalMs = 3_000,
 ): Promise<boolean> {
-  const expected = Address.parse(cfg.protocolFeeAddress || cfg.adminAddress);
+  const expected = Address.parse(expectedRecipientAddress);
   const deadline = Date.now() + timeoutMs;
   const addr = Address.parse(poolAddress);
 
@@ -216,13 +239,70 @@ export async function waitForFeeRecipientConfigured(
   return false;
 }
 
+export function isRouterAdmin(cfg: TestDexConfig, walletAddress: string): boolean {
+  try {
+    return Address.parse(walletAddress).equals(Address.parse(cfg.adminAddress));
+  } catch {
+    return false;
+  }
+}
+
+export function isFeeRecipientWallet(
+  pool: ProtocolFeePoolStatus,
+  walletAddress: string,
+  desiredRecipientAddress?: string,
+): boolean {
+  try {
+    const wallet = Address.parse(walletAddress);
+    if (pool.poolProtocolFeeAddress) {
+      return wallet.equals(Address.parse(pool.poolProtocolFeeAddress));
+    }
+    if (desiredRecipientAddress) {
+      return wallet.equals(Address.parse(desiredRecipientAddress));
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** @deprecated use isRouterAdmin / isFeeRecipientWallet */
 export function isCreatorWallet(cfg: TestDexConfig, walletAddress: string): boolean {
   try {
     const wallet = Address.parse(walletAddress);
-    const protocol = Address.parse(cfg.protocolFeeAddress);
+    const protocol = Address.parse(cfg.protocolFeeAddress || cfg.adminAddress);
     const admin = Address.parse(cfg.adminAddress);
     return wallet.equals(protocol) || wallet.equals(admin);
   } catch {
     return false;
   }
+}
+
+function shortAddr(addr: string): string {
+  if (addr.length <= 13) return addr;
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+const FEE_RECIPIENT_STORAGE_KEY = 'testdex:feeRecipient';
+
+export function loadStoredFeeRecipient(cfg: TestDexConfig): string {
+  try {
+    const stored = localStorage.getItem(FEE_RECIPIENT_STORAGE_KEY);
+    if (stored) return Address.parse(stored).toString();
+  } catch {
+    /* use default */
+  }
+  return cfg.protocolFeeAddress || cfg.adminAddress;
+}
+
+export function saveStoredFeeRecipient(address: string): void {
+  localStorage.setItem(FEE_RECIPIENT_STORAGE_KEY, Address.parse(address).toString());
+}
+
+export function parseFeeRecipientInput(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error('Укажите адрес получателя комиссий');
+  }
+  return Address.parse(trimmed).toString();
 }

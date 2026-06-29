@@ -23,8 +23,12 @@ import {
   buildCollectFeesTx,
   buildSetPoolFeesTx,
   formatCollected,
-  isCreatorWallet,
+  isFeeRecipientWallet,
+  isRouterAdmin,
   loadProtocolFeeStatuses,
+  loadStoredFeeRecipient,
+  parseFeeRecipientInput,
+  saveStoredFeeRecipient,
   totalCollectableHint,
   waitForFeeRecipientConfigured,
   type ProtocolFeePoolStatus,
@@ -183,16 +187,30 @@ function AdminPanel(props: {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [pools, setPools] = useState<ProtocolFeePoolStatus[]>([]);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [recipientInput, setRecipientInput] = useState(() => loadStoredFeeRecipient(cfg));
 
-  const creatorAddr = cfg.protocolFeeAddress || cfg.adminAddress;
-  const isCreator = walletAddress ? isCreatorWallet(cfg, walletAddress) : false;
+  const defaultRecipient = cfg.protocolFeeAddress || cfg.adminAddress;
+  const isAdmin = walletAddress ? isRouterAdmin(cfg, walletAddress) : false;
   const testnet = cfg.network === 'testnet';
+
+  let desiredRecipient = defaultRecipient;
+  try {
+    desiredRecipient = parseFeeRecipientInput(recipientInput);
+  } catch {
+    /* invalid input — keep default for labels */
+  }
 
   const refresh = async () => {
     setLoading(true);
     setLoadError(null);
     try {
-      setPools(await loadProtocolFeeStatuses(cfg));
+      let recipient = defaultRecipient;
+      try {
+        recipient = parseFeeRecipientInput(recipientInput);
+      } catch {
+        recipient = defaultRecipient;
+      }
+      setPools(await loadProtocolFeeStatuses(cfg, recipient));
       setUpdatedAt(new Date());
     } catch (e: unknown) {
       setLoadError(e instanceof Error ? e.message : String(e));
@@ -204,7 +222,44 @@ function AdminPanel(props: {
 
   useEffect(() => {
     void refresh();
-  }, [cfg]);
+  }, [cfg, recipientInput]);
+
+  const applyFeeRecipient = async (pool: ProtocolFeePoolStatus) => {
+    if (!walletAddress) {
+      tonConnectUI.openModal();
+      return;
+    }
+    if (testnet && walletChain && walletChain !== CHAIN.TESTNET) {
+      setStatus('Кошелёк на mainnet. Включите Testnet в Tonkeeper.', true);
+      return;
+    }
+    if (!isAdmin) {
+      setStatus('Смена получателя доступна только admin-кошельку router.', true);
+      return;
+    }
+
+    setBusy(true);
+    setStatus(null);
+    try {
+      const recipient = parseFeeRecipientInput(recipientInput);
+      saveStoredFeeRecipient(recipient);
+      const setupTx = buildSetPoolFeesTx(cfg, pool, recipient);
+      await tonConnectUI.sendTransaction(
+        buildTonConnectRequest(cfg, [buildTonConnectMessage(setupTx, testnet)]),
+      );
+      const ready = await waitForFeeRecipientConfigured(cfg, pool.poolAddress, recipient);
+      setStatus(
+        ready
+          ? `Получатель для ${pool.pairLabel} обновлён: ${shortAddr(recipient)}. Вывод — с этого кошелька.`
+          : 'set_fees отправлен. Подождите ~15 с и нажмите ↻.',
+      );
+      setTimeout(() => void refresh(), 15000);
+    } catch (e: unknown) {
+      setStatus(formatTxError(e), true);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const withdrawFees = async (pool: ProtocolFeePoolStatus) => {
     if (!walletAddress) {
@@ -215,10 +270,6 @@ function AdminPanel(props: {
       setStatus('Кошелёк на mainnet. Включите Testnet в Tonkeeper.', true);
       return;
     }
-    if (!isCreator) {
-      setStatus('Вывод доступен только с admin-кошелька создателя.', true);
-      return;
-    }
     if (!pool.canWithdraw) {
       setStatus('Вывод пока недоступен — см. условия ниже.', true);
       return;
@@ -227,17 +278,35 @@ function AdminPanel(props: {
     setBusy(true);
     setStatus(null);
     try {
+      const recipient = parseFeeRecipientInput(recipientInput);
+      saveStoredFeeRecipient(recipient);
+
       if (!pool.feeRecipientConfigured) {
+        if (!isAdmin) {
+          setStatus(
+            'Сначала admin назначает получателя, затем вывод подписывает кошелёк получателя.',
+            true,
+          );
+          return;
+        }
         setStatus('Шаг 1/2: настройка получателя комиссий (set_fees)…');
-        const setupTx = buildSetPoolFeesTx(cfg, pool);
+        const setupTx = buildSetPoolFeesTx(cfg, pool, recipient);
         await tonConnectUI.sendTransaction(
           buildTonConnectRequest(cfg, [buildTonConnectMessage(setupTx, testnet)]),
         );
-        const ready = await waitForFeeRecipientConfigured(cfg, pool.poolAddress);
+        const ready = await waitForFeeRecipientConfigured(cfg, pool.poolAddress, recipient);
         if (!ready) {
           setStatus('set_fees отправлен, но пул ещё не обновился. Подождите и нажмите ↻.', true);
           return;
         }
+      }
+
+      if (!isFeeRecipientWallet(pool, walletAddress, recipient)) {
+        setStatus(
+          `collect_fees подписывает только получатель (${shortAddr(recipient)}). Подключите его кошелёк.`,
+          true,
+        );
+        return;
       }
 
       setStatus(
@@ -250,7 +319,7 @@ function AdminPanel(props: {
         buildTonConnectRequest(cfg, [buildTonConnectMessage(collectTx, testnet)]),
       );
       setStatus(
-        `Комиссии выведены для ${pool.pairLabel}. Jetton на ${shortAddr(creatorAddr)} (~30 с).`,
+        `Комиссии выведены для ${pool.pairLabel}. Jetton на ${shortAddr(recipient)} (~30 с).`,
       );
       setTimeout(() => void refresh(), 15000);
     } catch (e: unknown) {
@@ -270,13 +339,26 @@ function AdminPanel(props: {
       </div>
 
       <p className="hint">
-        Комиссия протокола ({pools[0]?.protocolFeePercent ?? '0.10%'} с swap) копится в пуле. Вывод — на admin-кошелёк ({shortAddr(creatorAddr)}).
+        Комиссия протокола ({pools[0]?.protocolFeePercent ?? '0.10%'} с swap) копится в пуле.
+        Admin router назначает получателя (<code>set_fees</code>), вывод подписывает кошелёк получателя.
       </p>
 
       <div className="admin-meta">
+        <label className="field admin-recipient-field">
+          <span className="admin-meta-label">Адрес получателя jetton</span>
+          <input
+            className="input"
+            value={recipientInput}
+            onChange={(e) => setRecipientInput(e.target.value)}
+            placeholder="EQ…"
+          />
+          <span className="hint admin-recipient-hint">
+            По умолчанию из config. Сохраняется в браузере. Для каждого пула — «Применить к пулу».
+          </span>
+        </label>
         <div className="admin-meta-row">
-          <span className="admin-meta-label">Получатель jetton</span>
-          <code className="admin-meta-value">{shortAddr(creatorAddr)}</code>
+          <span className="admin-meta-label">Admin router</span>
+          <code className="admin-meta-value">{shortAddr(cfg.adminAddress)}</code>
         </div>
         <div className="admin-meta-row">
           <span className="admin-meta-label">Ваш кошелёк</span>
@@ -284,7 +366,17 @@ function AdminPanel(props: {
             {walletAddress ? (
               <>
                 {shortAddr(walletAddress)}{' '}
-                {isCreator ? <span className="pool-badge ok">создатель</span> : <span className="pool-badge warn">не создатель</span>}
+                {isAdmin ? (
+                  <span className="pool-badge ok">admin</span>
+                ) : isFeeRecipientWallet(
+                  { poolProtocolFeeAddress: desiredRecipient } as ProtocolFeePoolStatus,
+                  walletAddress,
+                  desiredRecipient,
+                ) ? (
+                  <span className="pool-badge ok">получатель</span>
+                ) : (
+                  <span className="pool-badge warn">другой</span>
+                )}
               </>
             ) : (
               'не подключён'
@@ -295,13 +387,13 @@ function AdminPanel(props: {
 
       {!walletAddress && (
         <div className="banner warn inline">
-          Подключите кошелёк создателя ({shortAddr(creatorAddr)}), чтобы подписать вывод.
+          Подключите кошелёк admin или получателя для операций с комиссиями.
         </div>
       )}
 
-      {walletAddress && !isCreator && (
+      {walletAddress && !isAdmin && pools.some((p) => p.canWithdraw && !isFeeRecipientWallet(p, walletAddress, desiredRecipient)) && (
         <div className="banner warn inline">
-          Вывод доступен только с admin-кошелька <strong>{shortAddr(creatorAddr)}</strong>.
+          Вывод подписывает <strong>получатель</strong> ({shortAddr(desiredRecipient)}), не admin.
         </div>
       )}
 
@@ -349,21 +441,48 @@ function AdminPanel(props: {
                 </ul>
               )}
 
-              {pool.canWithdraw && (
-                <p className="hint admin-ready-hint">
-                  К выводу: {totalCollectableHint(pool)} → {shortAddr(creatorAddr)}
-                  {!pool.feeRecipientConfigured && ' (при первом выводе — 2 подписи)'}
+              {pool.poolProtocolFeeAddress && (
+                <p className="hint">
+                  В пуле on-chain: <code>{shortAddr(pool.poolProtocolFeeAddress)}</code>
+                  {pool.feeRecipientConfigured ? (
+                    <span className="pool-badge ok"> совпадает</span>
+                  ) : (
+                    <span className="pool-badge warn"> другой адрес</span>
+                  )}
                 </p>
               )}
 
-              <button
-                type="button"
-                className="primary"
-                disabled={busy || !pool.canWithdraw || !isCreator}
-                onClick={() => void withdrawFees(pool)}
-              >
-                {busy ? 'Отправка…' : pool.canWithdraw ? 'Вывести комиссии' : 'Вывод недоступен'}
-              </button>
+              {pool.canWithdraw && (
+                <p className="hint admin-ready-hint">
+                  К выводу: {totalCollectableHint(pool)} → {shortAddr(desiredRecipient)}
+                  {!pool.feeRecipientConfigured && isAdmin && ' (сначала set_fees, затем collect с кошелька получателя)'}
+                </p>
+              )}
+
+              <div className="admin-actions">
+                {!pool.feeRecipientConfigured && isAdmin && (
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    disabled={busy}
+                    onClick={() => void applyFeeRecipient(pool)}
+                  >
+                    Применить получателя к пулу
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={
+                    busy ||
+                    !pool.canWithdraw ||
+                    (!isAdmin && !isFeeRecipientWallet(pool, walletAddress ?? '', desiredRecipient))
+                  }
+                  onClick={() => void withdrawFees(pool)}
+                >
+                  {busy ? 'Отправка…' : pool.canWithdraw ? 'Вывести комиссии' : 'Вывод недоступен'}
+                </button>
+              </div>
             </article>
           </li>
         ))}

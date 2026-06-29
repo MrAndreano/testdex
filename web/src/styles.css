@@ -440,6 +440,15 @@ body {
   margin-top: 0;
 }
 
+.admin-recipient-field {
+  gap: 6px;
+}
+
+.admin-recipient-hint {
+  margin: 0;
+  font-size: 0.75rem;
+}
+
 .admin-meta {
   display: flex;
   flex-direction: column;
